@@ -1,0 +1,107 @@
+# Pluggable Document Parser Provider Configuration
+providers:
+  mineru_cloud:
+    driver: mineru
+    transport: http
+    location: remote
+    endpoint_env: MINERU_ENDPOINT
+    api_key_env: MINERU_API_KEY
+    enabled: true
+    capabilities:
+      pdf: true
+      image: true
+      ocr: true
+      layout: true
+      figure: true
+      table: true
+      formula: true
+    priority: 100
+    timeout: 300.0
+
+  paddle_cloud:
+    driver: paddleocr
+    transport: http
+    location: remote
+    endpoint_env: PADDLEOCR_ENDPOINT
+    api_key_env: PADDLEOCR_API_KEY
+    enabled: true
+    capabilities:
+      pdf: true
+      image: true
+      ocr: true
+      layout: true
+      figure: true
+      table: true
+      formula: true
+    priority: 90
+    timeout: 300.0
+
+  mineru_local:
+    driver: mineru
+    transport: http
+    location: local
+    endpoint_env: LOCAL_MINERU_ENDPOINT
+    enabled: false
+    capabilities:
+      pdf: true
+      image: true
+      ocr: true
+      layout: true
+      figure: true
+      table: true
+      formula: true
+    priority: 80
+    timeout: 600.0
+    lifecycle:
+      mode: on_demand
+
+  paddle_local:
+    driver: paddleocr
+    transport: http
+    location: local
+    endpoint_env: LOCAL_PADDLE_ENDPOINT
+    enabled: false
+    capabilities:
+      pdf: true
+      image: true
+      ocr: true
+      layout: true
+      figure: true
+      table: true
+      formula: true
+    priority: 70
+    timeout: 600.0
+    lifecycle:
+      mode: on_demand
+
+  openvino_ocr:
+    driver: generic_ocr
+    transport: http
+    location: local
+    endpoint_env: AI_GATEWAY_ENDPOINT
+    model: openvino-ocr
+    enabled: false
+    capabilities:
+      image: true
+      ocr: true
+      pdf: false
+      layout: false
+      figure: false
+      table: false
+      formula: false
+    priority: 50
+    timeout: 60.0
+    lifecycle:
+      mode: model_on_demand
+
+routing:
+  public:
+    prefer:
+      - mineru_cloud
+      - paddle_cloud
+      - mineru_local
+  private:
+    prefer:
+      - mineru_local
+      - paddle_local
+      - openvino_ocr

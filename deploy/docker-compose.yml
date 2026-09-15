@@ -1,0 +1,88 @@
+services:
+  ovms:
+    image: openvino/model_server:latest-gpu
+    container_name: ovms-server
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:rw
+      - /mnt/user/appdata/ovms/runtime:/ovms-config:rw
+    environment:
+      - ONEAPI_DEVICE_SELECTOR=level_zero:0
+      - ZES_ENABLE_SYSMAN=1
+      - SYCL_CACHE_PERSISTENT=1
+      - SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+      - UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1
+      - SYCL_PI_LEVEL_ZERO_DEVICE_SCOPE_EVENTS=0
+      - UR_L0_USE_IMMEDIATE_COMMANDLISTS=1
+    command: >
+      --config_path /ovms-config/config.json
+      --rest_port 8001
+    ports:
+      - "${OVMS_REST_PORT:-28331}:8001"
+    networks:
+      - ai_network
+
+  ai-gateway:
+    build:
+      context: ..
+      dockerfile: services/ai-gateway/Dockerfile
+    image: ghcr.io/kettly1260/research-ai-runtime-gateway:latest
+    container_name: ai-gateway
+    restart: unless-stopped
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/ovms/runtime:/ovms-config:rw
+      - /mnt/user/appdata/ovms/tokenizers:/tokenizers:ro
+      - ../config:/config:ro
+    ports:
+      - "${AI_GATEWAY_PORT:-28001}:8000"
+    environment:
+      - OVMS_BASE=${OVMS_BASE:-http://ovms-server:8001}
+      - OVMS_TIMEOUT=${OVMS_TIMEOUT:-120}
+      - MODELS_CONFIG_PATH=/config/models.yaml
+      - OVMS_CONFIG_PATH=/ovms-config/config.json
+      - OVMS_MODEL_CATALOG_PATH=/ovms-config/model_catalog.json
+      - BGE_TOKENIZER_PATH=/tokenizers/bge-m3
+      - RERANK_TOKENIZER_PATH=/tokenizers/qwen-reranker
+      - MODEL_IDLE_UNLOAD_SECONDS=${MODEL_IDLE_UNLOAD_SECONDS:-600}
+      - MAX_LOADED_MODELS=${MAX_LOADED_MODELS:-2}
+      - MODEL_IDLE_SWEEP_SECONDS=${MODEL_IDLE_SWEEP_SECONDS:-60}
+      - TOKENIZERS_PARALLELISM=true
+    depends_on:
+      - ovms
+    networks:
+      - ai_network
+
+  research-media:
+    build:
+      context: ..
+      dockerfile: services/research-media/Dockerfile
+    image: ghcr.io/kettly1260/research-ai-runtime-media:latest
+    container_name: research-media
+    restart: unless-stopped
+    volumes:
+      - /mnt/user/appdata/research-media/data:/data/media.lance:rw
+      - ../config:/config:ro
+    ports:
+      - "${RESEARCH_MEDIA_PORT:-28003}:8002"
+    environment:
+      - AI_GATEWAY_ENDPOINT=${AI_GATEWAY_ENDPOINT:-http://ai-gateway:8000}
+      - PARSER_CONFIG_PATH=/config/providers.yaml
+      - MEDIA_DATA_DIR=/data/media.lance
+      - MINERU_API_KEY=${MINERU_API_KEY:-}
+      - MINERU_ENDPOINT=${MINERU_ENDPOINT:-}
+      - PADDLEOCR_API_KEY=${PADDLEOCR_API_KEY:-}
+      - PADDLEOCR_ENDPOINT=${PADDLEOCR_ENDPOINT:-}
+      - LOCAL_MINERU_ENDPOINT=${LOCAL_MINERU_ENDPOINT:-}
+      - LOCAL_PADDLE_ENDPOINT=${LOCAL_PADDLE_ENDPOINT:-}
+    depends_on:
+      - ai-gateway
+    networks:
+      - ai_network
+
+networks:
+  ai_network:
+    external: true

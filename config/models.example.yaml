@@ -1,0 +1,80 @@
+# Model configurations for AI Gateway and Device Broker
+# Policy: GPU_ONLY, CPU_ONLY, GPU_PREFERRED, CPU_PREFERRED, BURST_BOTH
+# Default: GPU_PREFERRED
+models:
+  qwen3-embedding-0.6b-int4:
+    model_id: qwen3-embedding-0.6b-int4
+    type: embedding
+    ovms_model: qwen3-embedding-0.6b-int4-pooled
+    embedding_backend: pooled_ir
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 600
+    adaptive_batching: true
+    tokenizer_path: /models/OpenVINO/Qwen3-Embedding-0.6B-int4-cw-ov
+    max_batch_size: 16
+    timeout: 120
+
+  bge-m3:
+    model_id: bge-m3
+    type: embedding
+    ovms_model: bge-m3-i8
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 600
+    tokenizer_path: /tokenizers/bge-m3
+    max_batch_size: 8
+    timeout: 120
+
+  bge-m3-i8:
+    model_id: bge-m3-i8
+    type: embedding
+    ovms_model: bge-m3-i8
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 600
+    tokenizer_path: /tokenizers/bge-m3
+    max_batch_size: 8
+    timeout: 120
+
+  qwen-reranker:
+    model_id: qwen-reranker
+    type: rerank
+    ovms_model: qwen-reranker
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 300
+    tokenizer_path: /tokenizers/qwen-reranker
+    max_batch_size: 2
+    timeout: 120
+
+  jina-clip-v2:
+    model_id: jina-clip-v2
+    type: multimodal_embedding
+    ovms_model: jina-clip-v2
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 300
+    tokenizer_path: /tokenizers/jina-clip-v2
+    timeout: 120
+
+  dinov3:
+    model_id: dinov3
+    type: dino_embedding
+    ovms_model: dinov3
+    preferred_device: GPU
+    fallback_device: CPU
+    policy: GPU_PREFERRED
+    idle_ttl: 120
+    timeout: 60
+
+device_limits:
+  cpu_semaphore: 4
+  cpu_thread_budget: 4
+  ram_budget_mb: 4096
+  max_queue_depth: 64

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-ai-runtime"
+version = "0.2.0"
+description = "Research AI Runtime: Universal inference gateway, pluggable document parser, and scientific media index"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "httpx>=0.24.0",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/contracts",
+    "services/ai-gateway",
+    "services/research-media",
+]
+
+[tool.pytest.ini_options]
+pythonpath = [
+    ".",
+    "packages/contracts/src"
+]

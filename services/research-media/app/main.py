@@ -83,19 +83,20 @@ async def search_media(req: MediaSearchRequest):
 
 @app.get("/v1/providers")
 def list_providers():
+    drivers = PARSER_MANAGER.registry.list_drivers()
     return {
         "providers": [
             {
                 "name": p.name,
-                "driver": p.config.driver,
-                "location": p.config.location,
-                "enabled": p.config.enabled,
-                "priority": p.config.priority,
+                "driver": p.definition.driver,
+                "location": p.definition.location,
+                "enabled": p.definition.enabled,
+                "priority": p.definition.priority,
+                "capabilities": p.definition.capabilities,
                 "status": p.status.model_dump(),
             }
-            for p in PARSER_MANAGER.providers.values()
-        ],
-        "routing": PARSER_MANAGER.routing_rules,
+            for p in drivers
+        ]
     }
 
 

@@ -2,29 +2,26 @@ import os
 import yaml
 from typing import Any, Dict, Optional
 
-PARSER_CONFIG_PATH = os.getenv("PARSER_CONFIG_PATH", "/config/providers.yaml")
+PARSER_CONFIG_PATH = os.getenv("PARSER_CONFIG_PATH", "config/providers.yaml")
 AI_GATEWAY_ENDPOINT = os.getenv("AI_GATEWAY_ENDPOINT", "http://ai-gateway:8000")
 MEDIA_DATA_DIR = os.getenv("MEDIA_DATA_DIR", "/data/media.lance")
-
-# API Keys & Endpoints (defaults or overrides)
-MINERU_API_KEY = os.getenv("MINERU_API_KEY", "")
-MINERU_ENDPOINT = os.getenv("MINERU_ENDPOINT", "https://mineru.net/api/v4")
-
-PADDLEOCR_API_KEY = os.getenv("PADDLEOCR_API_KEY", "")
-PADDLEOCR_ENDPOINT = os.getenv("PADDLEOCR_ENDPOINT", "")
-
-LOCAL_MINERU_ENDPOINT = os.getenv("LOCAL_MINERU_ENDPOINT", "http://mineru-local:8080")
-LOCAL_PADDLE_ENDPOINT = os.getenv("LOCAL_PADDLE_ENDPOINT", "http://paddle-local:8080")
+SUPERVISOR_ENDPOINT = os.getenv("SUPERVISOR_ENDPOINT", "http://supervisor:9001")
 
 
 def load_providers_config(path: Optional[str] = None) -> Dict[str, Any]:
     target_path = path or PARSER_CONFIG_PATH
     if not os.path.exists(target_path):
-        # Fallback to config/providers.example.yaml if running locally
-        if os.path.exists("config/providers.example.yaml"):
-            target_path = "config/providers.example.yaml"
-        elif os.path.exists("../../config/providers.example.yaml"):
-            target_path = "../../config/providers.example.yaml"
+        candidates = [
+            os.path.abspath(target_path),
+            "config/providers.example.yaml",
+            "../../config/providers.example.yaml",
+            "/app/config/providers.yaml",
+            "/app/config/providers.example.yaml",
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                target_path = cand
+                break
         else:
             return {"providers": {}, "routing": {}}
     try:

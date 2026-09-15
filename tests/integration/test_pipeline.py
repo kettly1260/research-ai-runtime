@@ -85,7 +85,7 @@ def test_parser_privacy_hard_boundary():
 
     assert len(candidates) > 0
     for cand in candidates:
-        assert cand.config.location == "local", f"Security violation: Private document exposed to {cand.name} ({cand.config.location})"
+        assert cand.definition.location == "local", f"Security violation: Private document exposed to {cand.name} ({cand.definition.location})"
 
 
 def test_parser_quota_exhaustion_backoff():

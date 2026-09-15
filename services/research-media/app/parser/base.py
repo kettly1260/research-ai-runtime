@@ -1,28 +1,26 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
 import time
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath("packages/contracts/src"))
-
-from contracts import ParseRequest, ParsedDocument, ProviderConfig, ProviderStatus
+from contracts import ParseRequest, ParsedDocument, ProviderStatus
+from .models import ProviderDefinition
 
 
-class BaseParserProvider(ABC):
-    """Abstract Base Class for Document Parser Providers."""
+class BaseParserDriver(ABC):
+    """Abstract Base Class for generic parser drivers."""
 
-    def __init__(self, name: str, config: ProviderConfig):
-        self.name = name
-        self.config = config
+    def __init__(self, definition: ProviderDefinition):
+        self.name = definition.name or "unnamed_provider"
+        self.definition = definition
         self.status = ProviderStatus(
-            name=name,
-            available=config.enabled,
+            name=self.name,
+            available=definition.enabled,
         )
 
+    @property
+    def config(self) -> ProviderDefinition:
+        return self.definition
+
     def is_available(self) -> bool:
-        lifecycle_mode = getattr(self.config.lifecycle, "mode", "external")
-        if not self.config.enabled and lifecycle_mode not in ("on_demand", "model_on_demand"):
+        if not self.definition.enabled and self.definition.lifecycle.mode not in ("on_demand", "model_on_demand"):
             return False
         if self.status.quota_state == "exhausted":
             return False
@@ -45,18 +43,19 @@ class BaseParserProvider(ABC):
             self.status.quota_state = "exhausted"
             self.status.cooldown_until = now + 3600.0  # 1 hour cooldown
         else:
-            # Exponential backoff: 30s, 60s, 120s, up to 300s
             backoff = min(30.0 * (2 ** (self.status.failure_count - 1)), 300.0)
             self.status.cooldown_until = now + backoff
 
     def satisfies_capabilities(self, needs: list) -> bool:
+        # Convert definition capabilities list to set
+        caps = {c.lower() for c in self.definition.capabilities}
         for need in needs:
             key = need.lower()
             if key == "figures":
                 key = "figure"
             elif key == "tables":
                 key = "table"
-            if not self.config.capabilities.get(key, False) and not self.config.capabilities.get(need, False):
+            if key not in caps and need.lower() not in caps:
                 return False
         return True
 

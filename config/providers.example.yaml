@@ -1,107 +1,161 @@
-# Pluggable Document Parser Provider Configuration
+# Research AI Runtime - Declarative Parser Providers Configuration v2.0
+# All providers use the generic HTTP driver - no vendor-specific Python code.
+
 providers:
+
   mineru_cloud:
-    driver: mineru
-    transport: http
+    driver: http
     location: remote
+    endpoint: https://mineru.net/api/v4
     endpoint_env: MINERU_ENDPOINT
-    api_key_env: MINERU_API_KEY
     enabled: true
-    capabilities:
-      pdf: true
-      image: true
-      ocr: true
-      layout: true
-      figure: true
-      table: true
-      formula: true
     priority: 100
     timeout: 300.0
+    capabilities:
+      - pdf
+      - image
+      - ocr
+      - layout
+      - figures
+      - tables
+      - formula
+    auth:
+      type: bearer
+      token_env: MINERU_API_KEY
+    request:
+      method: POST
+      path: /extract/task
+      encoding: multipart
+      file:
+        mode: multipart
+        field: file
+      fields:
+        is_ocr: true
+        enable_formula: true
+        layout_model: doclayout_yolo
+    async:
+      enabled: true
+      job_id_path: data.batch_id || data.task_id
+      poll_path: /extract/task/{job_id}
+      poll_method: GET
+      status_path: data.state || data.status
+      success_values:
+        - done
+        - success
+        - completed
+      failure_values:
+        - failed
+        - error
+      result_path: data
+      poll_interval_seconds: 2.0
+      max_poll_seconds: 300.0
+    response:
+      markdown_path: markdown || text || full_zip_url
+      pages_path: pages
+      blocks_path: layout_blocks || blocks
+      figures_path: figures
+      tables_path: tables
 
   paddle_cloud:
-    driver: paddleocr
-    transport: http
+    driver: http
     location: remote
+    endpoint: https://aistudio.baidu.com/serving/api/v1
     endpoint_env: PADDLEOCR_ENDPOINT
-    api_key_env: PADDLEOCR_API_KEY
     enabled: true
-    capabilities:
-      pdf: true
-      image: true
-      ocr: true
-      layout: true
-      figure: true
-      table: true
-      formula: true
     priority: 90
-    timeout: 300.0
+    timeout: 120.0
+    capabilities:
+      - pdf
+      - image
+      - ocr
+      - layout
+      - figures
+      - tables
+      - formula
+    auth:
+      type: header
+      header_name: Authorization
+      token_env: PADDLEOCR_API_KEY
+    request:
+      method: POST
+      path: /ocr/document
+      encoding: json
+      file:
+        mode: base64
+        field: file
+      fields:
+        use_layout: true
+        use_formula: true
+    async:
+      enabled: false
+    response:
+      markdown_path: result.markdown || result.text
+      blocks_path: result.layout_result || result.ocr_result
+      figures_path: result.figures
+      tables_path: result.tables
 
   mineru_local:
-    driver: mineru
-    transport: http
+    driver: http
     location: local
+    endpoint: http://mineru-local:8000
     endpoint_env: LOCAL_MINERU_ENDPOINT
-    enabled: false
-    capabilities:
-      pdf: true
-      image: true
-      ocr: true
-      layout: true
-      figure: true
-      table: true
-      formula: true
-    priority: 80
-    timeout: 600.0
-    lifecycle:
-      mode: on_demand
-
-  paddle_local:
-    driver: paddleocr
-    transport: http
-    location: local
-    endpoint_env: LOCAL_PADDLE_ENDPOINT
-    enabled: false
-    capabilities:
-      pdf: true
-      image: true
-      ocr: true
-      layout: true
-      figure: true
-      table: true
-      formula: true
-    priority: 70
-    timeout: 600.0
-    lifecycle:
-      mode: on_demand
-
-  openvino_ocr:
-    driver: generic_ocr
-    transport: http
-    location: local
-    endpoint_env: AI_GATEWAY_ENDPOINT
-    model: openvino-ocr
-    enabled: false
-    capabilities:
-      image: true
-      ocr: true
-      pdf: false
-      layout: false
-      figure: false
-      table: false
-      formula: false
+    enabled: true
     priority: 50
-    timeout: 60.0
+    timeout: 180.0
+    capabilities:
+      - pdf
+      - image
+      - ocr
+      - layout
+      - figures
+      - tables
+      - formula
+    lifecycle:
+      mode: on_demand
+      resource: mineru-local
+      startup_timeout_seconds: 60.0
+    auth:
+      type: none
+    request:
+      method: POST
+      path: /parse
+      encoding: multipart
+      file:
+        mode: multipart
+        field: file
+    async:
+      enabled: false
+    response:
+      markdown_path: markdown
+      blocks_path: blocks
+      figures_path: figures
+      tables_path: tables
+
+  generic_local_ocr:
+    driver: http
+    location: local
+    endpoint: http://ai-gateway:8000
+    endpoint_env: LOCAL_OCR_ENDPOINT
+    enabled: true
+    priority: 30
+    timeout: 30.0
+    capabilities:
+      - image
+      - ocr
     lifecycle:
       mode: model_on_demand
-
-routing:
-  public:
-    prefer:
-      - mineru_cloud
-      - paddle_cloud
-      - mineru_local
-  private:
-    prefer:
-      - mineru_local
-      - paddle_local
-      - openvino_ocr
+      resource: ocr_model
+    auth:
+      type: none
+    request:
+      method: POST
+      path: /v1/ocr/recognize
+      encoding: json
+      file:
+        mode: base64
+        field: image_base64
+    async:
+      enabled: false
+    response:
+      markdown_path: text
+      blocks_path: lines || words

@@ -1,0 +1,39 @@
+# Production cutover image for the Unraid UHD730 host.
+#
+# Why a separate Dockerfile:
+#   * `services/ai-gateway/Dockerfile` is the generic/CI image (python:3.11-slim +
+#     a fresh pip resolve). Building it at cutover time would install whatever
+#     transformers/tokenizers/numpy are current that day, so legacy and modular
+#     would run *different* tokenizer runtimes and vector output could drift.
+#   * This image instead reuses the exact runtime base the legacy gateway already
+#     runs (`ovms-api-base:20260915`) and adds only what the modular package
+#     needs on top of it.
+#
+# Dependency verification against the production tokenizers:
+#   * base image already provides: fastapi, uvicorn, transformers, tokenizers,
+#     numpy, requests, httpx, pydantic, PyYAML
+#   * `pillow` is MISSING and is an import-time dependency of
+#     `research_ai_gateway.inference.multimodal` (`from PIL import Image`), so
+#     without it the app fails to start. It is installed here.
+#   * `protobuf` and `sentencepiece` are NOT required: every tokenizer directory
+#     the gateway loads ships a fast-tokenizer `tokenizer.json`
+#       - /tokenizers/bge-m3                              -> tokenizer.json
+#       - /tokenizers/qwen-reranker                       -> tokenizer.json
+#       - /models/OpenVINO/Qwen3-Embedding-0.6B-int4-cw-ov -> tokenizer.json
+#       - /models/Snowflake/snowflake-arctic-embed-m-v2.0-test -> tokenizer.json
+#     which is why the running legacy container works today without either.
+#
+# IMPORTANT: at runtime `/app` is bind-mounted from
+# `/mnt/user/appdata/ovms/api`, which SHADOWS anything baked into `/app` here.
+# The package source therefore has to live on the host at
+# `/mnt/user/appdata/ovms/api/research_ai_gateway/`; do not COPY it into /app.
+
+FROM ovms-api-base:20260915
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "pillow>=10.0"
+
+EXPOSE 8000
+
+CMD ["uvicorn", "research_ai_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]

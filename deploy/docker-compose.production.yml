@@ -1,0 +1,87 @@
+# Production deployment for the Unraid UHD730 host — AI GATEWAY ONLY.
+#
+# This file intentionally declares a single service. The production
+# `ovms-server` container is managed separately and its running command
+# (`--config_path /ovms-config/config.json --rest_port 8001`) does NOT match the
+# `ovms` service defined in deploy/docker-compose.yml, so a plain
+# `docker compose up -d` on that file would RECREATE OVMS. That is forbidden.
+#
+# Always deploy with:
+#     docker compose -f deploy/docker-compose.production.yml up -d --no-deps ai-gateway
+#
+# `ovms-server` is reached over the pre-existing external `ai_network`.
+#
+# Environment values below are pinned to the measured production baseline of the
+# legacy gateway. They must not be replaced by code defaults, which differ:
+#   MODEL_IDLE_UNLOAD_SECONDS  legacy 1200   (code default 1200, full-stack compose 600)
+#   RERANK_MAX_DOCS            legacy 64     (code default 8)
+#   RERANK_MAX_LENGTH          legacy 128    (code default 256)
+#   RERANK_BATCH_SIZE          legacy 1      (code default 2)
+#   BGE_BATCH_SIZE             legacy 8      (code default 4)
+#   HF_ENDPOINT                legacy https://hf-mirror.com (code default unset)
+
+services:
+  ai-gateway:
+    image: ${GATEWAY_IMAGE:-ovms-api-modular:latest}
+    container_name: ai-gateway
+    restart: unless-stopped
+    volumes:
+      # The modular package source lives here (see services/ai-gateway/Dockerfile.cutover):
+      # this bind mount shadows /app inside the image, so the package must be on the host.
+      - /mnt/user/appdata/ovms/api:/app:rw
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/ovms/runtime:/ovms-config:rw
+      - /mnt/user/appdata/ovms/tokenizers:/tokenizers:ro
+      # Logical model registry authority (config/models.yaml), kept in sync with
+      # the production model set.
+      - /mnt/user/appdata/ovms/gateway-config:/config:ro
+    ports:
+      - "${AI_GATEWAY_PORT:-28001}:8000"
+    environment:
+      # ---- OVMS wiring -------------------------------------------------------
+      - OVMS_BASE=${OVMS_BASE:-http://ovms-server:8001}
+      - OVMS_TIMEOUT=${OVMS_TIMEOUT:-120}
+      - OVMS_CONFIG_PATH=/ovms-config/config.json
+      - OVMS_MODEL_CATALOG_PATH=/ovms-config/model_catalog.json
+      # Rely on OVMS filesystem polling (default 1s) instead of the global
+      # /v1/config/reload endpoint, which reloads unrelated models and leaves
+      # END tombstones.
+      - OVMS_CONFIG_UPDATE_MODE=poll
+      # ---- logical model registry (single authority) -------------------------
+      - MODELS_CONFIG_PATH=/config/models.yaml
+      - MODEL_REGISTRY_PATH=/ovms-config/model_registry.json
+      # ---- tokenizers --------------------------------------------------------
+      - BGE_TOKENIZER_PATH=${BGE_TOKENIZER_PATH:-/tokenizers/bge-m3}
+      - RERANK_TOKENIZER_PATH=${RERANK_TOKENIZER_PATH:-/tokenizers/qwen-reranker}
+      - BGE_FALLBACK_TOKENIZER=${BGE_FALLBACK_TOKENIZER:-BAAI/bge-m3}
+      - RERANK_FALLBACK_TOKENIZER=${RERANK_FALLBACK_TOKENIZER:-Qwen/Qwen3-Reranker-0.6B}
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+      - TOKENIZERS_PARALLELISM=true
+      # ---- residency / lifecycle (production baseline) -----------------------
+      - MODEL_IDLE_UNLOAD_SECONDS=${MODEL_IDLE_UNLOAD_SECONDS:-1200}
+      - MAX_LOADED_MODELS=${MAX_LOADED_MODELS:-2}
+      - MODEL_IDLE_SWEEP_SECONDS=${MODEL_IDLE_SWEEP_SECONDS:-60}
+      # ---- rerank (production baseline) --------------------------------------
+      - RERANK_STRICT_RECALL=${RERANK_STRICT_RECALL:-1}
+      - RERANK_MAX_DOCS=${RERANK_MAX_DOCS:-64}
+      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-128}
+      - RERANK_MAX_CHARS=${RERANK_MAX_CHARS:-1000}
+      - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-1}
+      - RERANK_FALLBACK_MAX_LENGTH=${RERANK_FALLBACK_MAX_LENGTH:-96}
+      - RERANK_FALLBACK_TIMEOUT=${RERANK_FALLBACK_TIMEOUT:-180}
+      # ---- bge-m3 (production baseline) --------------------------------------
+      - BGE_MAX_TOTAL_TOKENS=${BGE_MAX_TOTAL_TOKENS:-8192}
+      - BGE_CHUNK_TOKENS=${BGE_CHUNK_TOKENS:-1024}
+      - BGE_CHUNK_OVERLAP=${BGE_CHUNK_OVERLAP:-128}
+      - BGE_BATCH_SIZE=${BGE_BATCH_SIZE:-8}
+      # ---- adaptive batching / broker budgets --------------------------------
+      - ADAPTIVE_EMBEDDING_BATCHING=${ADAPTIVE_EMBEDDING_BATCHING:-1}
+      - CPU_SEMAPHORE_LIMIT=${CPU_SEMAPHORE_LIMIT:-4}
+      - CPU_THREAD_BUDGET=${CPU_THREAD_BUDGET:-4}
+      - MAX_QUEUE_DEPTH=${MAX_QUEUE_DEPTH:-64}
+    networks:
+      - ai_network
+
+networks:
+  ai_network:
+    external: true

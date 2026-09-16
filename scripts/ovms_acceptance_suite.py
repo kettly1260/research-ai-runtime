@@ -127,16 +127,53 @@ class Counters:
     def __init__(self) -> None:
         self.http_5xx = 0
         self.exceptions = 0
+        #: Every transport failure, attributed.  A bare count is not actionable:
+        #: ``calibrate_text`` probes and retries, so a transient failure there is
+        #: invisible in the per-row results while still tripping the failure
+        #: counter.  Recording the method, URL and exception is what makes the
+        #: difference between "OVMS failed" and "a stale keep-alive connection
+        #: was reset and the retry succeeded".
+        self.exception_log: List[Dict[str, Any]] = []
+        #: Transport failures that were retried once (GET only).  Recorded
+        #: separately from ``exception_log`` so a retry can never hide a real
+        #: outage: if the retry also fails the attempt is *additionally* counted
+        #: as an exception, so a genuinely unreachable server still fails the
+        #: gate.
+        self.retry_log: List[Dict[str, Any]] = []
 
     def note_status(self, status: Optional[int]) -> None:
         if status is not None and status >= 500:
             self.http_5xx += 1
 
-    def note_exception(self) -> None:
+    def note_exception(self, method: str, url: str, exc: BaseException) -> None:
         self.exceptions += 1
+        self.exception_log.append(
+            {
+                "method": method,
+                "url": url,
+                "type": type(exc).__name__,
+                "message": str(exc)[:300],
+            }
+        )
+
+    def note_retry(self, method: str, url: str, exc: BaseException) -> None:
+        self.retry_log.append(
+            {
+                "method": method,
+                "url": url,
+                "type": type(exc).__name__,
+                "message": str(exc)[:300],
+            }
+        )
 
     def as_dict(self) -> Dict[str, int]:
         return {"http_5xx": self.http_5xx, "exceptions": self.exceptions}
+
+    def log(self) -> List[Dict[str, Any]]:
+        return list(self.exception_log)
+
+    def retries(self) -> List[Dict[str, Any]]:
+        return list(self.retry_log)
 
 
 # --------------------------------------------------------------------------- #
@@ -148,7 +185,7 @@ def _timed_post(url: str, payload: dict, timeout: float, counters: Counters) -> 
     try:
         response = _session().post(url, json=payload, timeout=timeout)
     except requests.RequestException as exc:
-        counters.note_exception()
+        counters.note_exception("POST", url, exc)
         return None, f"{type(exc).__name__}: {exc}", time.monotonic() - started
     elapsed = time.monotonic() - started
     counters.note_status(response.status_code)
@@ -159,18 +196,43 @@ def _timed_post(url: str, payload: dict, timeout: float, counters: Counters) -> 
 
 
 def _timed_get(url: str, timeout: float, counters: Counters) -> Tuple[Optional[int], Any, float]:
-    started = time.monotonic()
-    try:
-        response = _session().get(url, timeout=timeout)
-    except requests.RequestException as exc:
-        counters.note_exception()
-        return None, f"{type(exc).__name__}: {exc}", time.monotonic() - started
-    elapsed = time.monotonic() - started
-    counters.note_status(response.status_code)
-    try:
-        return response.status_code, response.json(), elapsed
-    except ValueError:
-        return response.status_code, response.text, elapsed
+    """GET with one retry on a transport-level disconnect.
+
+    ``requests.Session`` reuses keep-alive connections and uvicorn closes idle
+    ones, so the first GET after an idle gap can raise
+    ``ConnectionError('Connection aborted.', RemoteDisconnected(...))`` against a
+    perfectly healthy gateway.  This was observed once per acceptance run, always
+    on ``/v1/broker/metrics``, with the immediately following poll succeeding.
+    Counting that as a product failure makes the failure gate meaningless, so it
+    is retried once and recorded in ``retry_log``.
+
+    Only GET is retried: it is idempotent.  POST is not retried, because a POST
+    that was actually processed before the connection dropped would be
+    duplicated.  A genuinely unreachable server still fails both attempts and is
+    counted as an exception, so the gate keeps its teeth.
+    """
+    attempts = 2
+    last_exc: Optional[BaseException] = None
+    for attempt in range(attempts):
+        started = time.monotonic()
+        try:
+            response = _session().get(url, timeout=timeout)
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt + 1 < attempts and isinstance(exc, requests.exceptions.ConnectionError):
+                counters.note_retry("GET", url, exc)
+                continue
+            counters.note_exception("GET", url, exc)
+            return None, f"{type(exc).__name__}: {exc}", time.monotonic() - started
+        elapsed = time.monotonic() - started
+        counters.note_status(response.status_code)
+        try:
+            return response.status_code, response.json(), elapsed
+        except ValueError:
+            return response.status_code, response.text, elapsed
+    # Unreachable in practice: the loop either returns or falls through above.
+    counters.note_exception("GET", url, last_exc or RuntimeError("no attempt made"))
+    return None, f"{type(last_exc).__name__}: {last_exc}", 0.0
 
 
 def _first_vector(payload: Any) -> List[float]:
@@ -563,6 +625,47 @@ def render_report(results: Dict[str, Any]) -> str:
         f"* client exceptions: `{_fmt(results.get('counters', {}).get('exceptions'))}`",
     ]
 
+    exception_log = results.get("exception_log") or []
+    if exception_log:
+        lines += [
+            "",
+            "Transport failures, attributed (a bare count cannot distinguish an OVMS",
+            "failure from a reset keep-alive connection that succeeded on retry):",
+            "",
+            "| method | URL | exception | message |",
+            "|---|---|---|---|",
+        ]
+        for item in exception_log:
+            lines.append(
+                "| {m} | `{u}` | {t} | {msg} |".format(
+                    m=item.get("method", "-"),
+                    u=item.get("url", "-"),
+                    t=item.get("type", "-"),
+                    msg=str(item.get("message", "")).replace("|", "\\|")[:200],
+                )
+            )
+
+    retry_log = results.get("retry_log") or []
+    if retry_log:
+        lines += [
+            "",
+            "Transport failures that were retried once (GET only, idempotent).  Not",
+            "counted as failures; if a retry also failed, the attempt additionally",
+            "appears in the exception log above.  Listed for transparency:",
+            "",
+            "| method | URL | exception | message |",
+            "|---|---|---|---|",
+        ]
+        for item in retry_log:
+            lines.append(
+                "| {m} | `{u}` | {t} | {msg} |".format(
+                    m=item.get("method", "-"),
+                    u=item.get("url", "-"),
+                    t=item.get("type", "-"),
+                    msg=str(item.get("message", "")).replace("|", "\\|")[:200],
+                )
+            )
+
     if results.get("capability"):
         lines += ["", render_capability_markdown(results["capability"])]
     return "\n".join(lines) + "\n"
@@ -637,6 +740,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         results["zero_resident"] = run_zero_resident(args.gateway_base, args.timeout, counters)
 
     results["counters"] = counters.as_dict()
+    results["exception_log"] = counters.log()
+    results["retry_log"] = counters.retries()
     results["gates"] = evaluate_gates(results)
 
     report = render_report(results)

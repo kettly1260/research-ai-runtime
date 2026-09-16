@@ -11,6 +11,7 @@ Nothing in this module touches the network.
 from __future__ import annotations
 
 import json
+import requests
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import ovms_acceptance_suite as suite  # noqa: E402
 import ovms_protocol_capability_probe as probe  # noqa: E402
+import ovms_v3_embeddings_probe as v3  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -344,7 +346,7 @@ def test_calibrate_text_converges_on_the_requested_token_count(monkeypatch):
 
 def test_calibrate_text_gives_up_when_the_gateway_is_unreachable(monkeypatch):
     def dead_embed(gateway_base, model, text, timeout, counters):
-        counters.note_exception()
+        counters.note_exception("POST", f"{gateway_base}/v1/embeddings", ConnectionError("refused"))
         return {"http": None, "seconds": 0.0, "dim": 0, "norm": None,
                 "prompt_tokens": None, "error": "ConnectError"}
 
@@ -354,6 +356,15 @@ def test_calibrate_text_gives_up_when_the_gateway_is_unreachable(monkeypatch):
     assert actual is None
     assert text
     assert counters.exceptions == 1
+    # A bare count is not actionable; the failure must name its target.
+    assert counters.log() == [
+        {
+            "method": "POST",
+            "url": "http://gw/v1/embeddings",
+            "type": "ConnectionError",
+            "message": "refused",
+        }
+    ]
 
 
 def test_counters_track_5xx_and_transport_failures():
@@ -361,8 +372,93 @@ def test_counters_track_5xx_and_transport_failures():
     counters.note_status(200)
     counters.note_status(502)
     counters.note_status(None)
-    counters.note_exception()
+    counters.note_exception("GET", "http://gw/v1/broker/metrics", TimeoutError("timed out"))
     assert counters.as_dict() == {"http_5xx": 1, "exceptions": 1}
+    assert counters.log()[0]["method"] == "GET"
+    assert counters.log()[0]["type"] == "TimeoutError"
+
+
+# --------------------------------------------------------------------------- #
+# Keep-alive resets must not be reported as product failures
+# --------------------------------------------------------------------------- #
+
+
+class _ResetThenOkSession:
+    """A session whose first GET raises the exact reset uvicorn produces."""
+
+    def __init__(self, failures: int = 1):
+        self.remaining = failures
+        self.calls = 0
+        self.trust_env = True
+
+    def get(self, url, timeout=None):
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise requests.exceptions.ConnectionError(
+                "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+            )
+        return _FakeResponse(200, {"loaded_models": {}})
+
+    def post(self, url, json=None, timeout=None):
+        self.calls += 1
+        raise requests.exceptions.ConnectionError("('Connection aborted.', RemoteDisconnected(...))")
+
+
+class _FakeResponse:
+    def __init__(self, status_code, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_get_retries_a_reset_keep_alive_connection_and_does_not_fail_the_gate(monkeypatch):
+    session = _ResetThenOkSession(failures=1)
+    monkeypatch.setattr(suite, "_SESSION", session)
+    counters = suite.Counters()
+
+    status, payload, _ = suite._timed_get("http://gw/v1/broker/metrics", 5.0, counters)
+
+    assert status == 200
+    assert payload == {"loaded_models": {}}
+    assert counters.exceptions == 0, "a retried keep-alive reset is not a product failure"
+    assert counters.as_dict()["exceptions"] == 0
+    assert [entry["method"] for entry in counters.retries()] == ["GET"]
+    assert counters.retries()[0]["type"] == "ConnectionError"
+    assert session.calls == 2
+
+
+def test_get_still_fails_when_the_server_is_really_unreachable(monkeypatch):
+    """The retry must not be able to mask a genuine outage."""
+    session = _ResetThenOkSession(failures=99)
+    monkeypatch.setattr(suite, "_SESSION", session)
+    counters = suite.Counters()
+
+    status, payload, _ = suite._timed_get("http://gw/v1/broker/metrics", 5.0, counters)
+
+    assert status is None
+    assert "ConnectionError" in str(payload)
+    assert counters.exceptions == 1
+    # The attempt is logged so the retry is visible, and the final outcome is
+    # counted, so the gate still fails.
+    assert [entry["type"] for entry in counters.retries()] == ["ConnectionError"]
+    assert session.calls == 2
+
+
+def test_post_is_never_retried(monkeypatch):
+    """A POST that may already have been processed must not be duplicated."""
+    session = _ResetThenOkSession(failures=99)
+    monkeypatch.setattr(suite, "_SESSION", session)
+    counters = suite.Counters()
+
+    status, payload, _ = suite._timed_post("http://gw/v1/embeddings", {"model": "m"}, 5.0, counters)
+
+    assert status is None
+    assert counters.exceptions == 1
+    assert counters.retries() == []
+    assert session.calls == 1, "POST must be attempted exactly once"
 
 
 # --------------------------------------------------------------------------- #
@@ -396,3 +492,84 @@ def test_reranker_fixture_matches_the_task_book_expectation():
     assert suite.RERANK_QUERY == "what is biology?"
     assert any("Biology is the study" in doc for doc in suite.RERANK_DOCS)
     assert any("Eiffel" in doc for doc in suite.RERANK_DOCS)
+
+
+# --------------------------------------------------------------------------- #
+# /v3/embeddings alias identification
+# --------------------------------------------------------------------------- #
+
+
+def test_v3_alias_resolves_through_the_registry_ovms_model_mapping():
+    """The registry maps logical `qwen3-embedding-0.6b-int8` -> `qwen3-embedding-0.6b`.
+
+    The runtime alias therefore shares no exact name with the logical id, which
+    is exactly the case a naive exact-match lookup gets wrong.
+    """
+    aliases = ["bge-m3-i8__cpu", "qwen3-embedding-0.6b__cpu"]
+    assert v3._pick_alias(aliases, "qwen3-embedding-0.6b-int8") == "qwen3-embedding-0.6b__cpu"
+
+
+def test_v3_alias_prefers_the_alias_that_just_appeared():
+    before = ["bge-m3-i8__cpu"]
+    after = ["bge-m3-i8__cpu", "qwen3-embedding-0.6b__cpu"]
+    picked = v3._pick_alias(after, "qwen3-embedding-0.6b-int8", exclude=tuple(before))
+    assert picked == "qwen3-embedding-0.6b__cpu"
+
+
+def test_v3_alias_prefers_gpu_when_both_devices_are_resident():
+    aliases = ["qwen3-embedding-0.6b__cpu", "qwen3-embedding-0.6b__gpu"]
+    assert v3._pick_alias(aliases, "qwen3-embedding-0.6b-int8") == "qwen3-embedding-0.6b__gpu"
+
+
+def test_v3_alias_returns_none_for_an_unrelated_model():
+    assert v3._pick_alias(["qwen-reranker__cpu"], "qwen3-embedding-0.6b-int8") is None
+
+
+def test_v3_probe_refuses_to_run_without_the_inference_flag():
+    """A successful POST /v3/embeddings is a real inference; opt-in is mandatory."""
+    with pytest.raises(SystemExit):
+        v3.run_probe(
+            gateway_base="http://gw",
+            ovms_base="http://ovms",
+            gateway_model="qwen3-embedding-0.6b-int8",
+            timeout=1.0,
+            allow_inference_probes=False,
+        )
+
+
+def test_v3_cold_warm_reports_an_honest_error_when_the_alias_never_unloads(monkeypatch):
+    monkeypatch.setattr(
+        v3, "_wait_until_not_resident", lambda *a, **k: {"unloaded": False, "waited_seconds": None}
+    )
+    result = v3._gateway_cold_warm("http://gw", "m", "m__cpu", 1.0)
+    assert result["cold"] is None
+    assert result["warm"] is None
+    assert "still resident" in result["error"]
+
+
+def test_v3_cold_warm_measures_a_cold_then_a_warm_call(monkeypatch):
+    monkeypatch.setattr(
+        v3, "_wait_until_not_resident", lambda *a, **k: {"unloaded": True, "waited_seconds": 1.5}
+    )
+    calls = []
+
+    def fake_post(url, payload, timeout):
+        calls.append(url)
+        return {
+            "http": 200,
+            "seconds": 0.5,
+            "transport_error": None,
+            "body": {"data": [{"embedding": [1.0, 0.0]}]},
+        }
+
+    monkeypatch.setattr(v3, "_post", fake_post)
+    result = v3._gateway_cold_warm("http://gw", "m", "m__cpu", 1.0)
+
+    assert result["cold"]["kind"] == "cold"
+    assert result["cold"]["resident_before_call"] is False
+    assert result["warm"]["kind"] == "warm"
+    assert result["warm"]["resident_before_call"] is True
+    assert result["cold"]["dim"] == 2
+    assert result["cold"]["all_finite"] is True
+    assert result["cold"]["norm"] == 1.0
+    assert len(calls) == 2

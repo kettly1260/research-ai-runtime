@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_COMPOSE = REPO_ROOT / "deploy" / "docker-compose.production.yml"
 FULL_COMPOSE = REPO_ROOT / "deploy" / "docker-compose.yml"
 ENV_EXAMPLE = REPO_ROOT / "deploy" / "env.example"
+DOCKER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker.yml"
+TEST_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "test.yml"
 
 # Measured production baseline of the legacy gateway. These values are the
 # parity reference; they must appear explicitly in the production deploy file.
@@ -139,9 +141,33 @@ def test_cutover_dockerfile_adds_pillow_on_the_proven_base():
     dockerfile = REPO_ROOT / "services" / "ai-gateway" / "Dockerfile.cutover"
     assert dockerfile.exists()
     text = dockerfile.read_text(encoding="utf-8")
-    assert "FROM ovms-api-base:20260915" in text
+    assert "ARG CUTOVER_BASE_IMAGE=ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915" in text
+    assert "FROM ${CUTOVER_BASE_IMAGE}" in text
     assert "pillow" in text
     assert "research_ai_gateway.main:app" in text
+
+
+def test_cutover_base_wrapper_preserves_the_qualified_runtime():
+    dockerfile = REPO_ROOT / "services" / "ai-gateway" / "Dockerfile.cutover-base"
+    assert dockerfile.exists()
+    text = dockerfile.read_text(encoding="utf-8")
+    assert "ARG SOURCE_IMAGE=ovms-api-base:20260915" in text
+    assert "FROM ${SOURCE_IMAGE}" in text
+    assert "pip install" not in text
+    assert "org.opencontainers.image.source=\"https://github.com/kettly1260/research-ai-runtime\"" in text
+
+
+def test_cutover_branch_runs_ci_and_builds_a_sha_pinned_ghcr_candidate():
+    docker = DOCKER_WORKFLOW.read_text(encoding="utf-8")
+    tests = TEST_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "cutover-modular-ai-gateway" in docker
+    assert "workflow_dispatch" in docker
+    assert "build-gateway-cutover" in docker
+    assert "services/ai-gateway/Dockerfile.cutover" in docker
+    assert "CUTOVER_BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_GATEWAY_BASE }}:20260915" in docker
+    assert "type=raw,value=cutover-${{ github.sha }}" in docker
+    assert "cutover-modular-ai-gateway" in tests
 
 
 def test_cutover_dockerfile_does_not_copy_into_the_shadowed_app_dir():

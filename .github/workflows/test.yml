@@ -2,7 +2,7 @@ name: Tests & Lint
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, cutover-modular-ai-gateway ]
   pull_request:
     branches: [ main ]
 

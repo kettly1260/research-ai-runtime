@@ -1,0 +1,18 @@
+# One-time wrapper used to publish the exact, already-qualified Unraid runtime
+# base image to GHCR without re-resolving Python packages.
+#
+# Local usage on the production host:
+#   docker build \
+#     --build-arg SOURCE_IMAGE=ovms-api-base:20260915 \
+#     -f services/ai-gateway/Dockerfile.cutover-base \
+#     -t ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915 .
+#
+# This intentionally adds no runtime packages. The source image is the proven
+# production base; the only new layer is OCI metadata linking the GHCR package
+# back to this repository.
+
+ARG SOURCE_IMAGE=ovms-api-base:20260915
+FROM ${SOURCE_IMAGE}
+
+LABEL org.opencontainers.image.source="https://github.com/kettly1260/research-ai-runtime"
+LABEL org.opencontainers.image.description="Qualified legacy ai-gateway runtime base for the modular cutover"

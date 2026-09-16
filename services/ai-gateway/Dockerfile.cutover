@@ -28,7 +28,8 @@
 # The package source therefore has to live on the host at
 # `/mnt/user/appdata/ovms/api/research_ai_gateway/`; do not COPY it into /app.
 
-FROM ovms-api-base:20260915
+ARG CUTOVER_BASE_IMAGE=ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915
+FROM ${CUTOVER_BASE_IMAGE}
 
 WORKDIR /app
 

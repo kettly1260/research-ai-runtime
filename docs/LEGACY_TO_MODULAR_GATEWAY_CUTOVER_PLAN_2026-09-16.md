@@ -14,7 +14,8 @@ CUTOVER ALIAS PLAN      : PASS
 PRODUCTION CUTOVER READY: NO    (all P0 closed; awaiting explicit cutover go-ahead)
 ```
 
-Status: **planning only.** No production change was made while producing this document.
+Status: **repository implementation and isolated verification complete; production cutover not authorised.**
+No production change was made while producing or validating this document.
 This plan is the separate follow-up explicitly deferred by
 `docs/QWEN3_RERANKER_PRODUCTION_HOTFIX_2026-09-16.md` §9 and gated by
 `docs/PRODUCTION_RUNTIME_STATUS_2026-09-15.md` "Deployment gate".
@@ -52,9 +53,21 @@ Evidence summary:
   `ai-gateway` (no `ovms` service at all), so `ovms-server` can never be recreated by a gateway
   deploy. Locked by `tests/test_deployment_parity.py`.
 
-Full suite: **99 passed, 0 skipped** with live OVMS tests enabled (97 passed, 2 skipped
-hermetically). `ruff` clean on `services/ai-gateway/`, `tests/test_deployment_parity.py`,
-`scripts/cutover_normalize_runtime_config.py`, `config/`.
+The original 97/99 aggregate was produced in a working tree that also contained excluded,
+uncommitted research-media refactor files, so it is not used as branch-level evidence.
+
+**Clean-checkout verification at commit `46a43ba`:** a detached worktree containing only the
+cutover branch commits passed 81 tracked hermetic tests with 2 expected live-test skips:
+
+- integration pipeline: 5 passed;
+- gateway: 10 passed;
+- genai hermetic: 21 passed, 2 skipped;
+- registry/rerank/zero-resident/deployment: 33 passed;
+- baseline research-media tests: 12 passed.
+
+The same clean checkout then passed all 23 genai tests with
+`OVMS_GENAI_TEST_BASE=http://192.168.22.102:29191`, including both real-OVMS live tests.
+`ruff` and `git diff --check` are clean.
 
 ---
 
@@ -73,7 +86,7 @@ decision (closed), and any OVMS model/IR work.
 | `ovms-server` must not be modified, reloaded, or restarted | standing directive |
 | no `POST` to production OVMS `/v1/config/reload` | it reloads unrelated models and leaves `END` tombstones |
 | only the `ai-gateway` container may be restarted | standing directive |
-| no `commit`, `push`, `git reset --hard`, `git clean` | standing directive |
+| local commits allowed only on the cutover branch; no `push`, `git reset --hard`, or `git clean` | standing directive |
 | must be reversible by restoring one artifact + restarting `ai-gateway` | same pattern as the reranker hotfix |
 
 ---
@@ -121,7 +134,7 @@ base entries, so **the catalog does not need new entries**.
 | `GET /models` | yes | yes | parity |
 | `GET /v1/models/{id}` | yes | yes | parity |
 | `POST /v1/rerank` | yes (now correct) | yes | parity — both use the official protocol |
-| `POST /v1/embeddings` | yes | yes | **partial — see P0-1** |
+| `POST /v1/embeddings` | yes | yes | parity, including `genai_v3` |
 | `GET /v1/embedding-batch-stats` | yes | yes | **semantic diff — see P1-2** |
 | `POST /v1/chat/completions` | yes (demo stub) | **absent** | **gap — see P1-1** |
 | `GET /health` | absent | yes | additive |
@@ -414,12 +427,14 @@ Notes:
 `ovms-server` and `ovms` aliases, so the modular default `http://ovms:8001` and the compose value
 `http://ovms-server:8001` both resolve.
 
-**P2-5. Repository readiness.** The working tree carries a large uncommitted refactor
-(44 files changed, +938 / −3395) and the entire modular gateway package
-(`services/ai-gateway/research_ai_gateway/`) is **untracked**. CI (`.github/workflows/docker.yml`)
-would build and push the modular image to GHCR on `main`, but nothing has been pushed, so no
-GHCR image is available. A cutover should not proceed from an untracked, uncommitted source tree —
-resolving this requires the user to lift the no-commit constraint.
+**P2-5. Repository readiness — RESOLVED locally.** The modular gateway cutover is committed on
+the canonical local branch `cutover-modular-ai-gateway`. This machine's Git implementation does
+not reliably maintain slash-named refs, so the earlier `cutover/modular-ai-gateway` ref is
+non-canonical and must not be used for further writes.
+
+The canonical branch has a normal reflog. The validated code/test state is commit `46a43ba`. It
+has not been pushed; the repository has no configured remote. A clean detached worktree from that commit passed the
+branch-contained hermetic and live genai validation described in section 0.5.
 
 ---
 
@@ -473,7 +488,7 @@ disturb production residency. Limit this phase to:
 |---|---|
 | `GET /v1/models` | identical model id set to the pre-cutover baseline |
 | `POST /v1/embeddings` `bge-m3` | HTTP 200, 1024-d vector |
-| `POST /v1/embeddings` `qwen3-embedding-0.6b-int8` | HTTP 200 (**fails today — P0-1**) |
+| `POST /v1/embeddings` `qwen3-embedding-0.6b-int8` | HTTP 200; real OVMS parity already verified in isolation |
 | `POST /v1/embeddings` `arctic-embed-m-v2-int8` | HTTP 200 |
 | `POST /v1/rerank` (4 probe pairs) | Biology 0.99336 > Eiffel 3.0e-05; France/chemistry/ML pairs correct; all scores in `[0,1]` |
 | `GET /health`, `GET /v1/broker/metrics` | 200 |
@@ -494,15 +509,12 @@ Rollback touches only `ai-gateway`. The reranker rollback artifact
 
 ---
 
-## 7. Open questions
+## 7. Decisions and remaining gate
 
-1. **`genai_v3`** — port the backend, or retire `qwen3-embedding-0.6b-int8`?
-2. **`/v1/chat/completions`** — confirm no client depends on it before removing it.
-3. **Registry source of truth** — production JSON, or a mirrored YAML under `config/`?
-4. **Repository state** — the modular package is untracked and the tree carries a large
-   uncommitted refactor; committing is currently forbidden. Which constraint should be lifted
-   first, and on what branch?
-5. **External rerank clients** — the hotfix changed `score` from arbitrary logits (≈14.8–16.2) to
+The first four design questions are closed by the owner decisions and implementation below. The
+only remaining release gate is explicit authorisation to perform the production cutover.
+
+**External rerank clients** — the hotfix changed `score` from arbitrary logits (≈14.8–16.2) to
    a probability in `[0,1]`. Any client applying an absolute threshold (`score > 10`) will now
    never pass. This is independent of the cutover but should be surveyed in the same window.
 
@@ -527,12 +539,14 @@ Rollback touches only `ai-gateway`. The reranker rollback artifact
 | 1 | `genai_v3` port or retire? | **Port.** `qwen3-embedding-0.6b-int8` is not retired; production model/API parity is preserved for this cutover. |
 | 2 | `/v1/chat/completions`? | **Not ported** as a modular feature. No consumer found, so no shim is needed; deletion from the legacy surface is a later, separate cleanup. |
 | 3 | Registry source of truth? | **`config/models.yaml`** is the single authoritative logical registry. Before cutover it must be an exact mirror of the production model set (qwen3 embedding / arctic / reranker / BGE). YAML + `model_registry.json` dual authority is explicitly **not** maintained long term. |
-| 4 | Repository state? | A dedicated branch `cutover/modular-ai-gateway`. **Local commits allowed, push forbidden.** The proposed file list must be published before the branch is created. `git reset --hard` and `git clean` are forbidden. |
+| 4 | Repository state? | Canonical local branch is **`cutover-modular-ai-gateway`** because this machine silently loses slash-named refs. Local commits allowed, push forbidden; `git reset --hard` and `git clean` remain forbidden. |
 | 5 | External rerank clients? | Surveyed — value-safe (see above). |
 
-### Proposed commit file list — `cutover/modular-ai-gateway`
+### Committed cutover file set — `cutover-modular-ai-gateway`
 
-**Not yet created.** Published here for review; the branch is created only after sign-off.
+The cutover branch exists locally and has not been pushed. Commits through `47c56e9` contain the
+planned gateway parity work. Commit `46a43ba` then removes research-media refactor leakage from
+`tests/integration/test_pipeline.py`, making the branch independently testable from a clean checkout.
 
 *Included — the P0 parity work:*
 

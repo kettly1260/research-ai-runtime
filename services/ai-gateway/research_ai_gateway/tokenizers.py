@@ -28,6 +28,13 @@ qwen_tokenizer_executor = ThreadPoolExecutor(
 )
 
 
+def _configure_rerank_tokenizer(tokenizer):
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None and tokenizer.eos_token is not None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return tokenizer
+
+
 def get_bge_tokenizer():
     global _bge_tokenizer
     if _bge_tokenizer is not None:
@@ -79,6 +86,7 @@ def get_rerank_tokenizer():
                     RERANK_TOKENIZER_PATH,
                     local_files_only=True,
                 )
+                _rerank_tokenizer = _configure_rerank_tokenizer(_rerank_tokenizer)
                 _rerank_tokenizer_error = None
                 return _rerank_tokenizer
             except Exception as exc:
@@ -86,6 +94,7 @@ def get_rerank_tokenizer():
 
         try:
             _rerank_tokenizer = AutoTokenizer.from_pretrained(RERANK_FALLBACK_TOKENIZER)
+            _rerank_tokenizer = _configure_rerank_tokenizer(_rerank_tokenizer)
             _rerank_tokenizer_error = None
             return _rerank_tokenizer
         except Exception as exc:
@@ -103,12 +112,17 @@ def get_rerank_tokenizer():
 
 
 def release_tokenizers_for_model(model_name: str, tokenizer_paths: set):
-    global _bge_tokenizer
+    global _bge_tokenizer, _rerank_tokenizer
     released = False
     if model_name in ("bge-m3-i8", "bge-m3"):
         with _bge_tokenizer_lock:
             if _bge_tokenizer is not None:
                 _bge_tokenizer = None
+                released = True
+    if model_name == "qwen-reranker" or RERANK_TOKENIZER_PATH in tokenizer_paths:
+        with _rerank_tokenizer_lock:
+            if _rerank_tokenizer is not None:
+                _rerank_tokenizer = None
                 released = True
     if tokenizer_paths:
         with _embedding_tokenizer_lock:

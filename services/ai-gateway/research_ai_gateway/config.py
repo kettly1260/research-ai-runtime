@@ -13,6 +13,13 @@ OVMS_MODEL_CATALOG_PATH = os.getenv("OVMS_MODEL_CATALOG_PATH", "/ovms-config/mod
 MODEL_REGISTRY_PATH = os.getenv("MODEL_REGISTRY_PATH", "/ovms-config/model_registry.json")
 MODELS_CONFIG_PATH = os.getenv("MODELS_CONFIG_PATH", "/config/models.yaml")
 OVMS_CONFIG_RELOAD_URL = os.getenv("OVMS_CONFIG_RELOAD_URL", "{ovms_base}/v1/config/reload")
+# GenAI v3 (graph-backed) OpenAI-compatible embeddings endpoint.
+OVMS_GENAI_EMBEDDINGS_URL = os.getenv(
+    "OVMS_GENAI_EMBEDDINGS_URL", "{ovms_base}/v3/embeddings"
+)
+OVMS_CONFIG_UPDATE_MODE = os.getenv("OVMS_CONFIG_UPDATE_MODE", "poll").strip().lower()
+if OVMS_CONFIG_UPDATE_MODE not in {"poll", "api"}:
+    raise ValueError("OVMS_CONFIG_UPDATE_MODE must be 'poll' or 'api'")
 
 PINNED_MODELS = {
     item.strip()

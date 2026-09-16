@@ -2,7 +2,6 @@ import time
 import threading
 from typing import Any, List, Tuple
 import numpy as np
-import requests
 from fastapi import HTTPException
 from ..config import (
     BGE_MAX_TOTAL_TOKENS,
@@ -10,7 +9,7 @@ from ..config import (
     BGE_CHUNK_OVERLAP,
     BGE_BATCH_SIZE,
     OVMS_TIMEOUT,
-    OVMS_BASE,
+    ADAPTIVE_EMBEDDING_BATCHING,
     ADAPTIVE_BATCH_WAIT_MS,
     ADAPTIVE_BATCH_SUBMIT_TIMEOUT,
     QWEN_TOKENIZER_WORKERS,
@@ -22,7 +21,7 @@ from ..tokenizers import (
     get_embedding_tokenizer,
     qwen_tokenizer_executor,
 )
-from ..ovms_client import ovms_predict
+from ..ovms_client import ovms_predict, ovms_genai_embeddings
 
 
 def normalize_embedding_input(raw_input: Any) -> List[str]:
@@ -260,6 +259,76 @@ def call_sentence_transformer_embedding(
     }
 
 
+# ---------- GenAI v3 (graph-backed) embeddings ----------
+
+def normalize_genai_embeddings_response(result: Any, response_model_name: str) -> dict:
+    """Normalises an OVMS GenAI embeddings payload to the gateway's response shape.
+
+    The legacy gateway passed the backend payload through with only ``model``
+    replaced. We keep the observable shape identical (``object``/``data``/
+    ``model``/``usage``) while validating the vectors so a malformed backend
+    response surfaces as a 502 instead of a silent bad vector.
+    """
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=502, detail="embedding backend returned non-object JSON")
+
+    raw_data = result.get("data")
+    if not isinstance(raw_data, list) or not raw_data:
+        raise HTTPException(status_code=502, detail="empty genai embedding response")
+
+    normalized: List[dict] = []
+    for position, item in enumerate(raw_data):
+        if not isinstance(item, dict):
+            raise HTTPException(
+                status_code=502,
+                detail=f"unexpected genai embedding item type: {type(item).__name__}",
+            )
+        embedding = item.get("embedding")
+        if not isinstance(embedding, list) or not embedding:
+            raise HTTPException(
+                status_code=502,
+                detail="genai embedding item is missing a usable embedding vector",
+            )
+        try:
+            vector = [float(value) for value in embedding]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="genai embedding vector contains non-numeric values",
+            ) from exc
+        try:
+            index = int(item.get("index", position))
+        except (TypeError, ValueError):
+            index = position
+        normalized.append({"object": "embedding", "index": index, "embedding": vector})
+
+    normalized.sort(key=lambda entry: entry["index"])
+
+    usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+    try:
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    except (TypeError, ValueError):
+        prompt_tokens = 0
+    try:
+        total_tokens = int(usage.get("total_tokens") or prompt_tokens)
+    except (TypeError, ValueError):
+        total_tokens = prompt_tokens
+
+    return {
+        "object": "list",
+        "data": normalized,
+        "model": response_model_name,
+        "usage": {"prompt_tokens": prompt_tokens, "total_tokens": total_tokens},
+    }
+
+
+def call_genai_embedding(model_name: str, raw_input: Any, response_model_name: str) -> dict:
+    """Graph-backed (GenAI v3) embeddings via OVMS ``/v3/embeddings``."""
+    texts = normalize_embedding_input(raw_input)
+    result = ovms_genai_embeddings(model_name, texts)
+    return normalize_genai_embeddings_response(result, response_model_name)
+
+
 # ---------- Qwen Pooled IR ----------
 
 def _tokenize_qwen_text(text: str, tokenizer_path: str):
@@ -334,8 +403,13 @@ def pooled_ir_response(model_name: str, texts: List[str], response_model_name: s
     prepared = tokenize_qwen_texts(texts, tokenizer_path)
     if broker:
         with broker.embedding_inference_lock:
-            broker.ensure_model_available(model_name)
-            vectors, prompt_tokens = predict_pooled_ir(model_name, prepared, tokenizer_path)
+            # Hold the lease for the entire backend inference and use the
+            # concrete runtime alias selected by DeviceBroker.  Merely calling
+            # ensure_model_available() releases the lease before inference and
+            # then incorrectly addresses the unsuffixed logical model name,
+            # which breaks zero-resident and CPU-spillover operation.
+            with broker.lease(model_name) as active_model:
+                vectors, prompt_tokens = predict_pooled_ir(active_model, prepared, tokenizer_path)
     else:
         vectors, prompt_tokens = predict_pooled_ir(model_name, prepared, tokenizer_path)
     return {
@@ -365,6 +439,219 @@ class _AdaptiveEmbeddingItem:
         self.tokenizer_path = None
         self.input_ids = None
         self.attention_mask = None
+
+
+class AdaptiveGenAIBatcher:
+    """Length-aware cross-request batching for single-text GenAI (graph) embeddings.
+
+    Ported from the legacy gateway so the graph-backed
+    ``qwen3-embedding-0.6b-int8`` model keeps identical batching behaviour.
+    The thresholds are based on measured UHD 730 throughput for Qwen3
+    Embedding 0.6B INT4. Long inputs bypass active waiting because batching
+    brings little or no throughput gain there.
+    """
+
+    backend_name = "genai_v3"
+    timeout_detail = "adaptive embedding batch timeout"
+    failure_detail = "adaptive embedding batch failed"
+
+    def __init__(self, broker=None):
+        self.broker = broker
+        self._condition = threading.Condition()
+        self._queues = {"le256": [], "257_384": [], "385_512": [], "gt512": []}
+        self._stats_lock = threading.Lock()
+        self._stats = {
+            "submitted_items": 0,
+            "backend_batches": 0,
+            "backend_items": 0,
+            "batched_items": 0,
+            "backend_seconds": 0.0,
+            "queue_wait_seconds": 0.0,
+            "batch_size_counts": {"1": 0, "2": 0, "3": 0, "4": 0},
+            "bucket_items": {"le256": 0, "257_384": 0, "385_512": 0, "gt512": 0},
+            "errors": 0,
+        }
+        self._worker = threading.Thread(
+            target=self._run,
+            name="adaptive-genai-embedding-batcher",
+            daemon=True,
+        )
+        self._worker.start()
+
+    @staticmethod
+    def _policy(token_count: int):
+        if token_count <= 256:
+            return "le256", 4, max(0.0, ADAPTIVE_BATCH_WAIT_MS) / 1000.0
+        if token_count <= 384:
+            return "257_384", 2, max(0.0, ADAPTIVE_BATCH_WAIT_MS) / 1000.0
+        if token_count <= 512:
+            # Only combine requests already waiting; do not add latency just
+            # to chase the small ~5-7% throughput gain seen in this range.
+            return "385_512", 2, 0.0
+        return "gt512", 1, 0.0
+
+    def _token_count(self, text: str, tokenizer_path: str) -> int:
+        tokenizer = get_embedding_tokenizer(tokenizer_path)
+        encoded = tokenizer(
+            text or "",
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        ids = encoded.get("input_ids", [])
+        return max(1, len(ids))
+
+    def submit(self, model_name: str, response_model_name: str, text: str, tokenizer_path: str):
+        token_count = self._token_count(text, tokenizer_path)
+        bucket, _, _ = self._policy(token_count)
+        item = _AdaptiveEmbeddingItem(text, token_count, response_model_name)
+        item.model_name = model_name
+        item.bucket = bucket
+        item.tokenizer_path = tokenizer_path
+
+        with self._stats_lock:
+            self._stats["submitted_items"] += 1
+            self._stats["bucket_items"][bucket] += 1
+
+        with self._condition:
+            self._queues[bucket].append(item)
+            self._condition.notify_all()
+
+        if not item.event.wait(timeout=ADAPTIVE_BATCH_SUBMIT_TIMEOUT):
+            raise HTTPException(status_code=504, detail=self.timeout_detail)
+        if item.error is not None:
+            if isinstance(item.error, HTTPException):
+                raise item.error
+            raise HTTPException(
+                status_code=502, detail=f"{self.failure_detail}: {item.error}"
+            )
+        return item.result
+
+    def _select_bucket_locked(self):
+        candidates = []
+        for name, queue in self._queues.items():
+            if queue:
+                candidates.append((queue[0].created, name))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda entry: entry[0])
+        return candidates[0][1]
+
+    def _take_batch(self):
+        with self._condition:
+            while True:
+                bucket = self._select_bucket_locked()
+                if bucket is None:
+                    self._condition.wait()
+                    continue
+
+                queue = self._queues[bucket]
+                head = queue[0]
+                _, max_batch, wait_seconds = self._policy(head.token_count)
+                deadline = head.created + wait_seconds
+
+                while len(queue) < max_batch and wait_seconds > 0:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._condition.wait(timeout=remaining)
+
+                take = min(max_batch, len(queue))
+                batch = queue[:take]
+                del queue[:take]
+                return batch
+
+    def _predict_batch(self, model_name: str, texts: List[str], response_model_name: str) -> dict:
+        if self.broker:
+            # The model switch and inference stay in one critical section so
+            # another embedding family cannot evict this model mid-batch.
+            with self.broker.embedding_inference_lock:
+                with self.broker.lease(model_name) as active_model:
+                    return call_genai_embedding(active_model, texts, response_model_name)
+        return call_genai_embedding(model_name, texts, response_model_name)
+
+    def _finish_error(self, batch, exc):
+        with self._stats_lock:
+            self._stats["errors"] += len(batch)
+        for item in batch:
+            item.error = exc
+            item.event.set()
+
+    def _run(self):
+        while True:
+            batch = self._take_batch()
+            if not batch:
+                continue
+
+            model_name = batch[0].model_name
+            texts = [item.text for item in batch]
+            started = time.monotonic()
+            try:
+                result = self._predict_batch(model_name, texts, batch[0].response_model_name)
+
+                data = sorted(result.get("data", []), key=lambda entry: entry.get("index", 0))
+                if len(data) != len(batch):
+                    raise RuntimeError(
+                        f"embedding backend returned {len(data)} vectors for {len(batch)} inputs"
+                    )
+
+                finished = time.monotonic()
+                backend_seconds = finished - started
+                wait_seconds = sum(max(0.0, started - item.created) for item in batch)
+                with self._stats_lock:
+                    size_key = str(len(batch))
+                    self._stats["backend_batches"] += 1
+                    self._stats["backend_items"] += len(batch)
+                    if len(batch) > 1:
+                        self._stats["batched_items"] += len(batch)
+                    self._stats["backend_seconds"] += backend_seconds
+                    self._stats["queue_wait_seconds"] += wait_seconds
+                    self._stats["batch_size_counts"].setdefault(size_key, 0)
+                    self._stats["batch_size_counts"][size_key] += 1
+
+                for idx, item in enumerate(batch):
+                    entry = dict(data[idx])
+                    entry["index"] = 0
+                    item.result = {
+                        "object": "list",
+                        "data": [entry],
+                        "model": item.response_model_name,
+                        "usage": {
+                            "prompt_tokens": item.token_count,
+                            "total_tokens": item.token_count,
+                        },
+                    }
+                    item.event.set()
+            except Exception as exc:
+                self._finish_error(batch, exc)
+
+    def stats(self) -> dict:
+        with self._condition:
+            queue_depths = {name: len(queue) for name, queue in self._queues.items()}
+        with self._stats_lock:
+            snap = dict(self._stats)
+            snap["batch_size_counts"] = dict(self._stats["batch_size_counts"])
+            snap["bucket_items"] = dict(self._stats["bucket_items"])
+        backend_items = max(1, snap["backend_items"])
+        submitted = max(1, snap["submitted_items"])
+        snap.update(
+            {
+                "backend": self.backend_name,
+                "enabled": ADAPTIVE_EMBEDDING_BATCHING,
+                "wait_ms": ADAPTIVE_BATCH_WAIT_MS,
+                "queue_depths": queue_depths,
+                "mean_backend_ms_per_item": 1000.0 * snap["backend_seconds"] / backend_items,
+                "mean_queue_wait_ms": 1000.0 * snap["queue_wait_seconds"] / submitted,
+                "saved_backend_calls": max(0, snap["backend_items"] - snap["backend_batches"]),
+                "policy": {
+                    "<=256": {"max_batch": 4, "wait_ms": ADAPTIVE_BATCH_WAIT_MS},
+                    "257-384": {"max_batch": 2, "wait_ms": ADAPTIVE_BATCH_WAIT_MS},
+                    "385-512": {"max_batch": 2, "wait_ms": 0},
+                    ">512": {"max_batch": 1, "wait_ms": 0},
+                },
+            }
+        )
+        return snap
 
 
 class AdaptivePooledIRBatcher:
@@ -530,6 +817,13 @@ class AdaptivePooledIRBatcher:
                         i += 1
                 return batch
 
+    def _predict_batch(self, model_name: str, prepared, tokenizer_path: str):
+        if self.broker:
+            with self.broker.embedding_inference_lock:
+                with self.broker.lease(model_name) as active_model:
+                    return predict_pooled_ir(active_model, prepared, tokenizer_path)
+        return predict_pooled_ir(model_name, prepared, tokenizer_path)
+
     def _run(self):
         while True:
             batch = self._take_batch()
@@ -541,16 +835,9 @@ class AdaptivePooledIRBatcher:
             now = time.monotonic()
             wait_s = sum(now - item.created for item in batch)
             try:
-                if self.broker:
-                    with self.broker.embedding_inference_lock:
-                        self.broker.ensure_model_available(model_name)
-                        t0 = time.monotonic()
-                        vectors, _ = predict_pooled_ir(model_name, prepared, tokenizer_path)
-                        backend_s = time.monotonic() - t0
-                else:
-                    t0 = time.monotonic()
-                    vectors, _ = predict_pooled_ir(model_name, prepared, tokenizer_path)
-                    backend_s = time.monotonic() - t0
+                t0 = time.monotonic()
+                vectors, _ = self._predict_batch(model_name, prepared, tokenizer_path)
+                backend_s = time.monotonic() - t0
 
                 for idx, item in enumerate(batch):
                     item.result = {

@@ -1,4 +1,3 @@
-import os
 import time
 from typing import Any, Dict
 from fastapi import FastAPI, HTTPException
@@ -11,14 +10,17 @@ from .inference import (
     call_rerank,
     normalize_embedding_input,
     call_embedding,
+    call_genai_embedding,
     call_sentence_transformer_embedding,
     pooled_ir_response,
+    AdaptiveGenAIBatcher,
     AdaptivePooledIRBatcher,
     run_multimodal_image_embedding,
     run_multimodal_text_embedding,
     run_dino_embedding,
 )
 
+adaptive_genai_batcher = AdaptiveGenAIBatcher(broker=DEVICE_BROKER)
 adaptive_pooled_batcher = AdaptivePooledIRBatcher(broker=DEVICE_BROKER)
 
 
@@ -98,14 +100,14 @@ def rerank(req: Dict[str, Any]):
 
     ovms_model = cfg.get("ovms_model", model)
     preferred_device = cfg.get("preferred_device", "GPU")
-    DEVICE_BROKER.ensure_model_available(ovms_model, preferred_device=preferred_device)
 
     query = req.get("query")
     if not query:
         raise HTTPException(status_code=400, detail="query is required")
     documents = req.get("documents", [])
 
-    ranked, rerank_stats = call_rerank(ovms_model, query, documents)
+    with DEVICE_BROKER.lease(ovms_model, preferred_device=preferred_device) as active_model:
+        ranked, rerank_stats = call_rerank(active_model, query, documents)
     if top_n > 0:
         ranked = ranked[:top_n]
 
@@ -149,9 +151,9 @@ def embeddings(req: Dict[str, Any]):
     if model_type == "dino_embedding" or model.lower().startswith("dino"):
         if modality != "image":
             raise HTTPException(status_code=400, detail="DINO only supports image-to-image embeddings (modality='image')")
-        DEVICE_BROKER.ensure_model_available(ovms_model, preferred_device=preferred_device)
         items = raw_input if isinstance(raw_input, list) else [raw_input]
-        vectors = run_dino_embedding(ovms_model, items)
+        with DEVICE_BROKER.lease(ovms_model, preferred_device=preferred_device) as active_model:
+            vectors = run_dino_embedding(active_model, items, model_cfg=cfg)
         return {
             "object": "list",
             "data": [
@@ -164,10 +166,11 @@ def embeddings(req: Dict[str, Any]):
 
     # 2. Multimodal Embedding (Text or Image)
     if model_type == "multimodal_embedding" or modality == "image":
-        DEVICE_BROKER.ensure_model_available(ovms_model, preferred_device=preferred_device)
         if modality == "image":
             items = raw_input if isinstance(raw_input, list) else [raw_input]
-            vectors = run_multimodal_image_embedding(ovms_model, items)
+            vision_ovms = cfg.get("ovms_vision_model") or (f"{ovms_model}-vision" if "text" not in ovms_model else ovms_model.replace("text", "vision"))
+            with DEVICE_BROKER.lease(vision_ovms, preferred_device=preferred_device) as active_model:
+                vectors = run_multimodal_image_embedding(active_model, items, model_cfg=cfg)
             return {
                 "object": "list",
                 "data": [
@@ -179,9 +182,11 @@ def embeddings(req: Dict[str, Any]):
             }
         else:
             texts = normalize_embedding_input(raw_input)
-            vectors, prompt_tokens = run_multimodal_text_embedding(
-                ovms_model, texts, tokenizer_path=cfg.get("tokenizer_path")
-            )
+            text_ovms = cfg.get("ovms_text_model") or (f"{ovms_model}-text" if "vision" not in ovms_model else ovms_model.replace("vision", "text"))
+            with DEVICE_BROKER.lease(text_ovms, preferred_device=preferred_device) as active_model:
+                vectors, prompt_tokens = run_multimodal_text_embedding(
+                    active_model, texts, tokenizer_path=cfg.get("tokenizer_path"), model_cfg=cfg
+                )
             return {
                 "object": "list",
                 "data": [
@@ -192,8 +197,31 @@ def embeddings(req: Dict[str, Any]):
                 "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
             }
 
-    # 3. Standard Text Embedding (pooled_ir, sentence_transformer, bge_m3)
+    # 3. Standard Text Embedding (pooled_ir, genai_v3, sentence_transformer, bge_m3)
     backend = cfg.get("embedding_backend")
+
+    if backend == "genai_v3":
+        # Graph-backed OVMS model served through the OpenAI-compatible
+        # /v3/embeddings endpoint. Parity with the legacy gateway: the adaptive
+        # batcher is only engaged when the registry entry opts in AND provides a
+        # tokenizer path, because batching needs a local tokenizer for the
+        # length-aware policy.
+        texts = normalize_embedding_input(raw_input)
+        if (
+            ADAPTIVE_EMBEDDING_BATCHING
+            and cfg.get("adaptive_batching") is True
+            and len(texts) == 1
+            and cfg.get("tokenizer_path")
+        ):
+            return adaptive_genai_batcher.submit(
+                ovms_model,
+                model,
+                texts[0],
+                cfg["tokenizer_path"],
+            )
+        with DEVICE_BROKER.lease(ovms_model, preferred_device=preferred_device) as active_model:
+            return call_genai_embedding(active_model, texts, model)
+
     if backend == "pooled_ir":
         texts = normalize_embedding_input(raw_input)
         if (
@@ -223,10 +251,9 @@ def embeddings(req: Dict[str, Any]):
         )
 
     if backend == "sentence_transformer":
-        with DEVICE_BROKER.embedding_inference_lock:
-            DEVICE_BROKER.ensure_model_available(ovms_model, preferred_device=preferred_device)
+        with DEVICE_BROKER.lease(ovms_model, preferred_device=preferred_device) as active_model:
             return call_sentence_transformer_embedding(
-                ovms_model,
+                active_model,
                 raw_input,
                 model,
                 cfg,
@@ -234,16 +261,21 @@ def embeddings(req: Dict[str, Any]):
             )
 
     # Default: BGE-M3 / generic embedding
-    with DEVICE_BROKER.embedding_inference_lock:
-        DEVICE_BROKER.ensure_model_available(ovms_model, preferred_device=preferred_device)
-        return call_embedding(ovms_model, raw_input, model)
+    with DEVICE_BROKER.lease(ovms_model, preferred_device=preferred_device) as active_model:
+        return call_embedding(active_model, raw_input, model)
 
 
 # ---------- Stats & Health APIs ----------
 
 @app.get("/v1/embedding-batch-stats")
 def embedding_batch_stats():
-    return adaptive_pooled_batcher.stats()
+    # Parity with the legacy gateway: the reported batcher follows the backend
+    # configured for the primary Qwen embedding entry, so operators see the
+    # stats of the batching policy that is actually in use.
+    cfg = MODEL_REGISTRY.get("qwen3-embedding-0.6b-int4") or {}
+    if cfg.get("embedding_backend") == "pooled_ir":
+        return adaptive_pooled_batcher.stats()
+    return adaptive_genai_batcher.stats()
 
 
 @app.get("/v1/broker/metrics")

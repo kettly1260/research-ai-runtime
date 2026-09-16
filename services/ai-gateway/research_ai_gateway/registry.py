@@ -1,10 +1,13 @@
 import json
 import os
 import threading
-from typing import Any, Dict, Optional
 from .config import MODEL_REGISTRY_PATH, MODELS_CONFIG_PATH, load_yaml_models_config
 
 DEFAULT_MODEL_REGISTRY = {
+    # Last-resort fallback used only when neither the YAML registry nor the
+    # runtime JSON can be read. It mirrors the production model set exactly so a
+    # transient config read failure can never advertise a model that is not
+    # deployed in OVMS (for example the jina-clip-v2 / dinov3 export-only tracks).
     "qwen-reranker": {
         "type": "rerank",
         "ovms_model": "qwen-reranker",
@@ -29,17 +32,34 @@ DEFAULT_MODEL_REGISTRY = {
         "fallback_device": "CPU",
         "policy": "GPU_PREFERRED",
     },
-    "jina-clip-v2": {
-        "type": "multimodal_embedding",
-        "ovms_model": "jina-clip-v2",
+    "qwen3-embedding-0.6b-int8": {
+        "type": "embedding",
+        "ovms_model": "qwen3-embedding-0.6b",
+        "embedding_backend": "genai_v3",
         "owned_by": "openvino",
         "preferred_device": "GPU",
         "fallback_device": "CPU",
         "policy": "GPU_PREFERRED",
     },
-    "dinov3": {
-        "type": "dino_embedding",
-        "ovms_model": "dinov3",
+    "qwen3-embedding-0.6b-int4": {
+        "type": "embedding",
+        "ovms_model": "qwen3-embedding-0.6b-int4-pooled",
+        "embedding_backend": "pooled_ir",
+        "adaptive_batching": True,
+        "tokenizer_path": "/models/OpenVINO/Qwen3-Embedding-0.6B-int4-cw-ov",
+        "owned_by": "openvino",
+        "preferred_device": "GPU",
+        "fallback_device": "CPU",
+        "policy": "GPU_PREFERRED",
+    },
+    "arctic-embed-m-v2-int8": {
+        "type": "embedding",
+        "ovms_model": "arctic-embed-m-v2-int8",
+        "embedding_backend": "sentence_transformer",
+        "tokenizer_path": "/models/Snowflake/snowflake-arctic-embed-m-v2.0-test",
+        "max_length": 8192,
+        "batch_size": 2,
+        "query_prefix": "query: ",
         "owned_by": "openvino",
         "preferred_device": "GPU",
         "fallback_device": "CPU",

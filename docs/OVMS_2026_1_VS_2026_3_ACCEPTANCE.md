@@ -38,7 +38,7 @@ Two rules govern everything below:
 
 | Item | Value |
 | --- | --- |
-| Gateway commit under test | `a4b035a8f8dd22d44fef5f261d3408959043f8d7` |
+| Commit under test | `eb17ace` (adapter `a4b035a` + acceptance harness) |
 | Base commit (validated production long-text code) | `5567dbb8190d8315877389a92c5157f23a8a7c2a` |
 | Branch | `feat-ovms-kserve-v2-adapter` |
 | Production gateway image | `research-ai-runtime-gateway:local-5567-hotfix` |

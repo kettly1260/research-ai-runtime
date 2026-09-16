@@ -147,13 +147,28 @@ def test_cutover_dockerfile_adds_pillow_on_the_proven_base():
     assert "research_ai_gateway.main:app" in text
 
 
-def test_cutover_base_wrapper_preserves_the_qualified_runtime():
+def test_cutover_base_rebuilds_the_frozen_qualified_runtime():
     dockerfile = REPO_ROOT / "services" / "ai-gateway" / "Dockerfile.cutover-base"
+    freeze = REPO_ROOT / "services" / "ai-gateway" / "requirements.cutover-base.txt"
     assert dockerfile.exists()
+    assert freeze.exists()
     text = dockerfile.read_text(encoding="utf-8")
-    assert "ARG SOURCE_IMAGE=ovms-api-base:20260915" in text
-    assert "FROM ${SOURCE_IMAGE}" in text
-    assert "pip install" not in text
+    frozen = freeze.read_text(encoding="utf-8")
+    assert "ARG PYTHON_BASE_IMAGE=python:3.11.15" in text
+    assert "FROM ${PYTHON_BASE_IMAGE}" in text
+    assert "requirements.cutover-base.txt" in text
+    assert "python -m pip check" in text
+    for expected in (
+        "fastapi==0.135.3",
+        "transformers==5.5.4",
+        "tokenizers==0.22.2",
+        "numpy==2.4.4",
+        "uvicorn==0.44.0",
+        "httpx==0.28.1",
+        "pydantic==2.13.0",
+        "PyYAML==6.0.3",
+    ):
+        assert expected in frozen
     assert "org.opencontainers.image.source=\"https://github.com/kettly1260/research-ai-runtime\"" in text
 
 
@@ -163,7 +178,11 @@ def test_cutover_branch_runs_ci_and_builds_a_sha_pinned_ghcr_candidate():
 
     assert "cutover-modular-ai-gateway" in docker
     assert "workflow_dispatch" in docker
+    assert "build-gateway-cutover-base" in docker
     assert "build-gateway-cutover" in docker
+    assert "needs: build-gateway-cutover-base" in docker
+    assert "services/ai-gateway/Dockerfile.cutover-base" in docker
+    assert "research-ai-runtime-gateway-base" in docker
     assert "services/ai-gateway/Dockerfile.cutover" in docker
     assert "CUTOVER_BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_GATEWAY_BASE }}:20260915" in docker
     assert "type=raw,value=cutover-${{ github.sha }}" in docker

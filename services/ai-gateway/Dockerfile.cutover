@@ -5,9 +5,10 @@
 #     a fresh pip resolve). Building it at cutover time would install whatever
 #     transformers/tokenizers/numpy are current that day, so legacy and modular
 #     would run *different* tokenizer runtimes and vector output could drift.
-#   * This image instead reuses the exact runtime base the legacy gateway already
-#     runs (`ovms-api-base:20260915`) and adds only what the modular package
-#     needs on top of it.
+#   * This image instead uses a pinned reconstruction of the legacy Python
+#     runtime: Python 3.11.15 plus the complete package versions captured from
+#     `ovms-api-base:20260915` on 2026-09-16.  It then adds only what the modular
+#     package needs on top of that frozen environment.
 #
 # Dependency verification against the production tokenizers:
 #   * base image already provides: fastapi, uvicorn, transformers, tokenizers,

@@ -1,18 +1,21 @@
-# One-time wrapper used to publish the exact, already-qualified Unraid runtime
-# base image to GHCR without re-resolving Python packages.
+# Reproducible runtime base for the modular cutover image.
 #
-# Local usage on the production host:
-#   docker build \
-#     --build-arg SOURCE_IMAGE=ovms-api-base:20260915 \
-#     -f services/ai-gateway/Dockerfile.cutover-base \
-#     -t ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915 .
-#
-# This intentionally adds no runtime packages. The source image is the proven
-# production base; the only new layer is OCI metadata linking the GHCR package
-# back to this repository.
+# The legacy production image runs Python 3.11.15. Its Python runtime package
+# set was captured with `pip freeze` on 2026-09-16 and is reproduced here with
+# exact versions. This avoids transferring private registry credentials or
+# local Docker layers from the Unraid host to GitHub.
 
-ARG SOURCE_IMAGE=ovms-api-base:20260915
-FROM ${SOURCE_IMAGE}
+ARG PYTHON_BASE_IMAGE=python:3.11.15
+FROM ${PYTHON_BASE_IMAGE}
+
+WORKDIR /app
+
+COPY services/ai-gateway/requirements.cutover-base.txt /tmp/requirements.cutover-base.txt
+
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.cutover-base.txt \
+    && python -m pip check
 
 LABEL org.opencontainers.image.source="https://github.com/kettly1260/research-ai-runtime"
-LABEL org.opencontainers.image.description="Qualified legacy ai-gateway runtime base for the modular cutover"
+LABEL org.opencontainers.image.description="Pinned legacy ai-gateway Python runtime for the modular cutover"
+
+CMD ["python"]

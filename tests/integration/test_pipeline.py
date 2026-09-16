@@ -93,9 +93,9 @@ def test_full_pipeline_parse_ingest_search(tmp_path, media_client):
     with patch.object(MEDIA_INGESTOR, "store", temp_store), \
          patch.object(MEDIA_SEARCH, "store", temp_store):
 
-        with patch("app.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
-             patch("app.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
-             patch("app.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
+        with patch.object(MEDIA_INGESTOR.gateway, "get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
+             patch.object(MEDIA_INGESTOR.gateway, "get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
+             patch.object(MEDIA_SEARCH.gateway, "get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
 
             mock_img_emb.return_value = [[0.05] * 512]
             mock_dino_emb.return_value = [[0.08] * 384]

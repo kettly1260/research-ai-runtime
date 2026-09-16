@@ -21,6 +21,16 @@ OVMS_CONFIG_UPDATE_MODE = os.getenv("OVMS_CONFIG_UPDATE_MODE", "poll").strip().l
 if OVMS_CONFIG_UPDATE_MODE not in {"poll", "api"}:
     raise ValueError("OVMS_CONFIG_UPDATE_MODE must be 'poll' or 'api'")
 
+# OVMS wire protocol used for Classic Model inference.
+#   tfs    -> POST /v1/models/{model}:predict   (OVMS 2026.1, current production)
+#   kserve -> POST /v2/models/{model}/infer     (OVMS 2026.3.1, Classic Model REST API removed)
+#   auto   -> probe the backend once and cache the result; development,
+#             acceptance and CI only.  Production must pin an explicit value so
+#             a backend upgrade can never silently change the wire protocol.
+OVMS_PROTOCOL = os.getenv("OVMS_PROTOCOL", "tfs").strip().lower()
+if OVMS_PROTOCOL not in {"tfs", "kserve", "auto"}:
+    raise ValueError("OVMS_PROTOCOL must be 'tfs', 'kserve' or 'auto'")
+
 PINNED_MODELS = {
     item.strip()
     for item in os.getenv("PINNED_MODELS", "").split(",")

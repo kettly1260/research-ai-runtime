@@ -14,7 +14,13 @@
 
 services:
   ovms:
-    image: openvino/model_server:latest-gpu
+    # NEVER use `openvino/model_server:latest-gpu` in a deployment example.
+    # `latest-gpu` has already drifted from OVMS 2026.1 to 2026.3.1, which
+    # removes the Classic Model REST API this gateway's `tfs` protocol depends
+    # on.  A tag is not a compatibility contract: pin a validated tag, and for
+    # production pin the validated digest
+    # (openvino/model_server@sha256:<validated digest>).
+    image: ${OVMS_IMAGE:-openvino/model_server:2026.1-gpu}
     container_name: ovms-server
     restart: unless-stopped
     privileged: true
@@ -61,6 +67,9 @@ services:
       - OVMS_CONFIG_PATH=/ovms-config/config.json
       - OVMS_MODEL_CATALOG_PATH=/ovms-config/model_catalog.json
       - OVMS_CONFIG_UPDATE_MODE=${OVMS_CONFIG_UPDATE_MODE:-poll}
+      # Classic Model wire protocol: tfs (OVMS 2026.1) or kserve (OVMS 2026.3+).
+      # `auto` is for development/acceptance/CI only; production pins a value.
+      - OVMS_PROTOCOL=${OVMS_PROTOCOL:-tfs}
       - BGE_TOKENIZER_PATH=/tokenizers/bge-m3
       - RERANK_TOKENIZER_PATH=/tokenizers/qwen-reranker
       - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}

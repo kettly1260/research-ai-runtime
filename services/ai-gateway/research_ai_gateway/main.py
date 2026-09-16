@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from .config import ADAPTIVE_EMBEDDING_BATCHING
 from .registry import MODEL_REGISTRY
 from .broker import DEVICE_BROKER
+from . import ovms_protocol
 from .inference import (
     call_rerank,
     normalize_embedding_input,
@@ -291,4 +292,10 @@ def broker_metrics():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "ai-gateway"}
+    # Protocol diagnostics are part of the health payload so a protocol mismatch
+    # can be identified from the outside without reading container logs.
+    return {
+        "status": "ok",
+        "service": "ai-gateway",
+        **ovms_protocol.protocol_diagnostics(),
+    }

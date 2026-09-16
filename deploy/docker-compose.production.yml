@@ -45,6 +45,12 @@ services:
       # /v1/config/reload endpoint, which reloads unrelated models and leaves
       # END tombstones.
       - OVMS_CONFIG_UPDATE_MODE=poll
+      # ---- wire protocol -----------------------------------------------------
+      # Pinned explicitly to the Classic Model REST API of the validated
+      # production OVMS 2026.1 digest.  Never set this to `auto` here: an OVMS
+      # upgrade must not be able to change the wire protocol on its own, and a
+      # detection failure must be an operational decision, not a surprise.
+      - OVMS_PROTOCOL=${OVMS_PROTOCOL:-tfs}
       # ---- logical model registry (single authority) -------------------------
       # The logical model registry is baked into the immutable GHCR image.
       - MODELS_CONFIG_PATH=/opt/research-ai-gateway/config/models.yaml

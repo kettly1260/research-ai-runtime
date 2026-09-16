@@ -33,9 +33,6 @@ services:
       - /mnt/user/appdata/ovms/models:/models:ro
       - /mnt/user/appdata/ovms/runtime:/ovms-config:rw
       - /mnt/user/appdata/ovms/tokenizers:/tokenizers:ro
-      # Logical model registry authority (config/models.yaml), kept in sync with
-      # the production model set.
-      - /mnt/user/appdata/ovms/gateway-config:/config:ro
     ports:
       - "${AI_GATEWAY_PORT:-28001}:8000"
     environment:
@@ -49,7 +46,8 @@ services:
       # END tombstones.
       - OVMS_CONFIG_UPDATE_MODE=poll
       # ---- logical model registry (single authority) -------------------------
-      - MODELS_CONFIG_PATH=/config/models.yaml
+      # The logical model registry is baked into the immutable GHCR image.
+      - MODELS_CONFIG_PATH=/opt/research-ai-gateway/config/models.yaml
       - MODEL_REGISTRY_PATH=/ovms-config/model_registry.json
       # ---- tokenizers --------------------------------------------------------
       - BGE_TOKENIZER_PATH=${BGE_TOKENIZER_PATH:-/tokenizers/bge-m3}

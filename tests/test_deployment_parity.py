@@ -105,13 +105,13 @@ def test_production_compose_uses_polling_not_the_reload_api():
     assert "OVMS_CONFIG_RELOAD_URL" not in text
 
 
-def test_production_compose_mounts_the_registry_authority():
+def test_production_compose_uses_the_immutable_registry_authority():
     service = _load(PRODUCTION_COMPOSE)["services"]["ai-gateway"]
     mounts = service["volumes"]
-    assert any(m.endswith(":/config:ro") for m in mounts), mounts
+    assert not any(m.endswith(":/config:ro") for m in mounts), mounts
     assert any(":/ovms-config:rw" in m for m in mounts), mounts
     env = _env_map(service)
-    assert env["MODELS_CONFIG_PATH"] == "/config/models.yaml"
+    assert env["MODELS_CONFIG_PATH"] == "/opt/research-ai-gateway/config/models.yaml"
 
 
 def test_production_compose_joins_the_existing_external_network():
@@ -194,7 +194,9 @@ def test_cutover_dockerfile_does_not_copy_into_the_shadowed_app_dir():
     dockerfile = REPO_ROOT / "services" / "ai-gateway" / "Dockerfile.cutover"
     text = dockerfile.read_text(encoding="utf-8")
     assert "COPY services/ai-gateway/research_ai_gateway /opt/research-ai-gateway/research_ai_gateway" in text
+    assert "COPY config/models.yaml /opt/research-ai-gateway/config/models.yaml" in text
     assert "ENV PYTHONPATH=/opt/research-ai-gateway" in text
+    assert "ENV MODELS_CONFIG_PATH=/opt/research-ai-gateway/config/models.yaml" in text
     for line in dockerfile.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("COPY"):

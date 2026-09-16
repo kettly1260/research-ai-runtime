@@ -36,8 +36,10 @@ WORKDIR /app
 RUN pip install --no-cache-dir "pillow>=10.0"
 
 COPY services/ai-gateway/research_ai_gateway /opt/research-ai-gateway/research_ai_gateway
+COPY config/models.yaml /opt/research-ai-gateway/config/models.yaml
 
 ENV PYTHONPATH=/opt/research-ai-gateway
+ENV MODELS_CONFIG_PATH=/opt/research-ai-gateway/config/models.yaml
 
 EXPOSE 8000
 

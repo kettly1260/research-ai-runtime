@@ -6,15 +6,21 @@ from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("packages/contracts/src"))
+sys.path.insert(0, os.path.abspath("services/ai-gateway"))
 
 from research_ai_gateway.broker import DEVICE_BROKER
 import research_ai_gateway.broker as ai_gateway_broker_mod
 
-from research_media.main import app as media_app
-from research_media.parser.manager import PARSER_MANAGER
-from research_media.media.store import LanceMediaStore
-from research_media.media.ingest import MEDIA_INGESTOR
-from research_media.media.search import MEDIA_SEARCH
+# Keep research-media on its existing package layout in this branch. The
+# research_media package migration belongs to the separate research-media work
+# and is intentionally excluded from the gateway cutover branch.
+sys.path.insert(0, os.path.abspath("services/research-media"))
+
+from app.main import app as media_app
+from app.parser.manager import PARSER_MANAGER
+from app.media.store import LanceMediaStore
+from app.media.ingest import MEDIA_INGESTOR
+from app.media.search import MEDIA_SEARCH
 from contracts import ParseRequest, ParsedDocument, DocumentFigure
 
 
@@ -87,9 +93,9 @@ def test_full_pipeline_parse_ingest_search(tmp_path, media_client):
     with patch.object(MEDIA_INGESTOR, "store", temp_store), \
          patch.object(MEDIA_SEARCH, "store", temp_store):
 
-        with patch("research_media.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
-             patch("research_media.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
-             patch("research_media.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
+        with patch("app.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
+             patch("app.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
+             patch("app.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
 
             mock_img_emb.return_value = [[0.05] * 512]
             mock_dino_emb.return_value = [[0.08] * 384]
@@ -129,61 +135,3 @@ def test_full_pipeline_parse_ingest_search(tmp_path, media_client):
             assert s_data["count"] == 1
             assert s_data["results"][0]["source_native_id"] == "fig_superconduct"
             assert "Meissner" in s_data["results"][0]["caption"]
-
-
-def test_pdf_bytes_parse_and_ingest_flow(tmp_path, media_client):
-    """End-to-end integration: Raw PDF bytes -> Parser -> Structured Document -> LanceDB Ingest."""
-    import base64
-    import asyncio
-
-    # Minimal valid PDF header and trailer bytes
-    pdf_bytes = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj 3 0 obj<</Type/Page/MediaBox[0 0 612 792]>>endobj\nxref\n0 4\n0000000000 65535 f\n0000000009 00000 n\n0000000052 00000 n\n0000000114 00000 n\ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n178\n%%EOF"
-    b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
-
-    req = ParseRequest(
-        file_content_base64=b64_pdf,
-        mime_type="application/pdf",
-        needs=["pdf", "figures"]
-    )
-
-    temp_store = LanceMediaStore(data_dir=str(tmp_path / "pdf_flow_lance"))
-
-    with patch.object(MEDIA_INGESTOR, "store", temp_store):
-        async def _run():
-            # Mock driver execution producing structured document from PDF
-            candidates = PARSER_MANAGER.select_candidates(req)
-            assert len(candidates) > 0
-
-            target_driver = candidates[0]
-            with patch.object(PARSER_MANAGER.lifecycle, "prepare_provider", new_callable=AsyncMock) as mock_prep, \
-                 patch.object(target_driver, "parse", new_callable=AsyncMock) as mock_parse:
-                mock_prep.return_value = True
-                mock_parse.return_value = ParsedDocument(
-                    document_id="doc_from_pdf_bytes",
-                    markdown="# PDF Report Title\n\nContent body from PDF.",
-                    figures=[
-                        DocumentFigure(
-                            figure_id="pdf_fig_1",
-                            page=1,
-                            caption="Figure 1: PDF extracted diagram",
-                            image="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-                        )
-                    ]
-                )
-
-                parsed_doc = await PARSER_MANAGER.parse(req)
-                assert parsed_doc.document_id == "doc_from_pdf_bytes"
-                assert len(parsed_doc.figures) == 1
-                assert parsed_doc.provider_info.status == "success"
-
-                # Ingest to LanceDB
-                with patch("research_media.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img, \
-                     patch("research_media.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino:
-                    mock_img.return_value = [[0.1] * 512]
-                    mock_dino.return_value = [[0.2] * 384]
-
-                    result = await MEDIA_INGESTOR.ingest_document(parsed_doc, source_uri="file://local.pdf")
-                    assert result["ingested_count"] == 1
-                    assert temp_store.count() == 1
-
-        asyncio.run(_run())

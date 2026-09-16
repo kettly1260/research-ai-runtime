@@ -1,10 +1,16 @@
 # OVMS 2026.1 (TFS) vs OVMS 2026.3.1 (KServe v2) — Acceptance Report
 
-Status: **PHASE 1 COMPLETE / PHASE 2 AND 3 NOT STARTED**
+Status: **GATE 1 PASSED / GATE 2 AND 3 NOT STARTED / HARNESS READY**
 
 This report is filled in only from real measurements. Every cell that has not
 been measured yet is marked `PENDING` and carries the exact command or gate that
 must produce it. Nothing here is inferred from documentation.
+
+Gate 2 and Gate 3 are **blocked on inputs the report cannot supply for itself**:
+a pinned 2026.3.1 image digest, an isolated CPU-only environment, and explicit
+authorisation to create the Unraid acceptance stack. The measurement tooling is
+built, smoke-tested and unit-tested (§4.7), so those gates are a single command
+each once the inputs arrive.
 
 ---
 
@@ -15,7 +21,7 @@ The acceptance work is split into three gates, and they must be cleared in order
 | Gate | Scope | Environment | State |
 | --- | --- | --- | --- |
 | **Gate 1 — CPU / protocol / functional** | adapter correctness, wire format, error semantics, regression | isolated VM, CPU only, no GPU | **PASSED** (this document, §4) |
-| **Gate 2 — VM integration** | real OVMS 2026.1 + 2026.3.1 on CPU, capability probe capture | isolated VM, CPU only | **NOT STARTED** |
+| **Gate 2 — VM integration** | real OVMS 2026.1 + 2026.3.1 on CPU, capability probe capture | isolated VM, CPU only | **NOT STARTED** — tooling ready (§4.7), blocked on image digest + environment |
 | **Gate 3 — UHD730 GPU acceptance** | real GPU latency, memory, concurrency, long-text liveness | Unraid, isolated `acc-*` stack | **NOT STARTED — blocked on Gate 2** |
 
 Two rules govern everything below:
@@ -90,13 +96,14 @@ pytest tests/ services/ai-gateway/tests/ services/research-media/tests/ -q
 
 | Metric | Baseline (before change) | After change |
 | --- | --- | --- |
-| Passed | 85 | **148** |
+| Passed | 85 | **186** |
 | Skipped | 2 | 2 |
 | Failed | 0 | **0** |
 | New protocol tests | — | 63 |
+| New acceptance-harness tests | — | 38 |
 
-No existing test expectation was modified, deleted or weakened. The 63 new tests
-are additive.
+No existing test expectation was modified, deleted or weakened. All 101 new
+tests are additive.
 
 ### 4.3 New test coverage
 
@@ -111,6 +118,7 @@ are additive.
 | Diagnostics | 3 | configured vs effective vs unresolved-auto |
 | Protocol-aware availability | 4 | TFS `model_version_status`, KServe `/ready`, metadata fallback |
 | CPU contract over real HTTP | 8 | see §4.4 |
+| Acceptance harness gate logic | 38 | see §4.7 |
 
 ### 4.4 CPU contract test (real HTTP, no GPU)
 
@@ -153,6 +161,47 @@ does **not** prove GPU latency or liveness — that is Gate 3.
 | Lint (`ruff check`) | **PASS** |
 | `git diff --check` | **PASS** |
 
+### 4.7 Acceptance harness (the tooling that produces Gate 2 / Gate 3)
+
+The remaining ~40 report cells would otherwise be hand-transcribed from `curl`
+output, which is exactly how a red run gets written up as green. Two scripts
+replace that, and their gate logic is itself unit-tested so a wrong verdict
+cannot pass CI.
+
+| Script | Purpose |
+| --- | --- |
+| `scripts/ovms_protocol_capability_probe.py` | records the live API surface endpoint by endpoint (§5.1) and reports what `OVMS_PROTOCOL=auto` would decide, by reusing the gateway's own `probe_protocol()` |
+| `scripts/ovms_acceptance_suite.py` | runs the model matrix, long-text ladder, liveness gate, reranker and zero-resident checks; emits JSON plus a markdown fragment for §6 |
+
+Safety properties, deliberately built in:
+
+* **GET-only by default.** `POST /v1/models/{m}:predict` with `{"instances": []}`
+  is a *negative* probe — it can never produce a successful inference, so it
+  cannot cold-load a model. It is the MediaPipe tie-breaker the `auto` ladder
+  depends on, so it is on by default.
+* **`POST /v3/embeddings` is a real inference** and can cold-load a model. It is
+  off unless `--allow-inference-probes` is passed, and must never be pointed at
+  production.
+* **Nothing is reconfigured.** The harness is a client. It never writes a runtime
+  config directory and never restarts OVMS. Zero-resident state is *observed*
+  through the gateway's own `/v1/broker/metrics`.
+* **Proxy environment variables are ignored by default.** This machine exports
+  `HTTP_PROXY=http://127.0.0.1:<port>`, and `requests` honours it — so a loopback
+  acceptance run was being routed through the proxy, surfacing as a
+  `ReadTimeout` naming the *proxy's* port instead of the target's. That would
+  have benchmarked the proxy. Both scripts now build a `requests.Session` with
+  `trust_env = False`; `--use-env-proxy` opts back in. The finding is recorded
+  here because it silently corrupts every latency number in §6 if reintroduced.
+* The suite **exits non-zero** if any verdict is `FAIL`, so it can be a CI gate.
+
+The harness's decision logic is covered by
+`services/ai-gateway/tests/test_acceptance_harness.py` (38 tests, offline): an
+all-green run must pass every dimension, an all-red run must fail every
+dimension, an unmeasured section must report `N/A` and never `PASS`, a norm
+outside tolerance must fail correctness, a half-finished concurrency round must
+fail concurrency, and a `N/A` row for a model with no production deployment must
+not gate compatibility.
+
 ---
 
 ## 5. Gate 2 — VM integration with real OVMS (NOT STARTED)
@@ -162,35 +211,76 @@ production. It exists to capture real server behaviour instead of guessing it.
 
 ### 5.1 OVMS 2026.3.1 API capability capture (task item 25)
 
-Record the literal responses; do not rely on KServe documentation.
+Record the literal responses; do not rely on KServe documentation. Produced by:
+
+```
+python scripts/ovms_protocol_capability_probe.py \
+    --ovms-base http://<acceptance-ovms>:28342 \
+    --label ovms-2026.3.1 --model qwen-reranker \
+    --out .workbuddy-ai/artifacts/capability-20263.json
+```
 
 | Endpoint | 2026.3.1 observed response | 2026.1 observed response |
 | --- | --- | --- |
-| `GET /v2/health/live` | PENDING | PENDING |
-| `GET /v2/health/ready` | PENDING | PENDING |
-| `GET /v2/models/{model}` | PENDING | PENDING |
-| `GET /v2/models/{model}/ready` | PENDING | PENDING |
-| `POST /v2/models/{model}/infer` | PENDING | PENDING |
-| `GET /v1/config` | PENDING | PENDING |
+| `GET /v2/health/live` | PENDING (probe) | PENDING (probe) |
+| `GET /v2/health/ready` | PENDING (probe) | PENDING (probe) |
+| `GET /v2/models/{model}` | PENDING (probe) | PENDING (probe) |
+| `GET /v2/models/{model}/ready` | PENDING (probe) | PENDING (probe) |
+| `POST /v2/models/{model}/infer` | PENDING (probe) | PENDING (probe) |
+| `GET /v1/config` | PENDING (probe) | PENDING (probe) |
 | `POST /v1/models/{model}:predict` | expected: 412 `model field is missing in JSON body` (observed on production probe) | expected: 200 |
-| `GET /v1/models/{model}` | PENDING | PENDING |
+| `GET /v1/models/{model}` | PENDING (probe) | PENDING (probe) |
+| `GET /v3/embeddings` | PENDING (probe) | PENDING (probe) |
+| `POST /v3/embeddings` | PENDING (`--allow-inference-probes`) | PENDING (`--allow-inference-probes`) |
 
 The `auto` detection ladder in `ovms_protocol/auto.py` is built on
 `/v2/health/ready` and `/v1/config`, with a negative `:predict` probe as the
 tie-break. **These three signals must be confirmed against the real 2026.3.1
 image before `auto` is used anywhere outside development, acceptance and CI.**
+The probe script reports the ladder's own conclusion, so this table and the
+ladder can never disagree.
+
+Two scope notes that the capability capture must settle:
+
+* **`qwen3-embedding-0.6b-int8` is served over the GenAI v3 `/v3/embeddings`
+  surface**, not the Classic Model REST API. The TFS/KServe adapter split does
+  not cover it, so its survival on 2026.3.1 is a *separate* risk that the
+  adapter work does not mitigate. If `/v3/embeddings` disappears in 2026.3.1,
+  that model is a hard blocker regardless of how green Gate 2 and Gate 3 are.
+* **DINO and the multimodal Classic IR are not deployed in production OVMS.**
+  Official DINOv3 weights are blocked on Meta gated approval
+  (`docs/OFFICIAL_DINOV3_ACCEPTANCE_STATUS.md`:
+  `BLOCKED_BY_META_APPROVAL_FOR_OFFICIAL_WEIGHTS`,
+  `UHD730_GPU_CANDIDATE_NOT_RECOMMENDED`) and jina-clip-v2 exists only as an
+  export. There is no production path to regress, so per the task wording
+  ("PASS required if the current production path exists") these rows are
+  **N/A**, not PASS and not FAIL. They are excluded from the compatibility gate.
 
 ### 5.2 Real model matrix (CPU)
+
+Produced by:
+
+```
+python scripts/ovms_acceptance_suite.py \
+    --gateway-base http://<acceptance-gateway>:28011 \
+    --ovms-base    http://<acceptance-ovms>:28341 \
+    --protocol tfs --label ovms-2026.1 \
+    --sections capability,matrix --out .workbuddy-ai/artifacts/acc-20261.json
+```
+
+…and repeated with `--protocol kserve`, `--label ovms-2026.3.1`, the 2026.3.1
+ports and `OVMS_PROTOCOL=kserve` on the gateway.
 
 | Model | 2026.1 TFS | 2026.3.1 KServe |
 | --- | --- | --- |
 | qwen3-embedding-0.6b-int4 | PENDING | PENDING |
-| qwen3-embedding-0.6b-int8 | PENDING | PENDING |
-| bge-m3 / bge-m3-i8 | PENDING | PENDING |
+| qwen3-embedding-0.6b-int8 | PENDING (via `/v3/embeddings`, outside the adapter) | PENDING (via `/v3/embeddings`, outside the adapter) |
+| bge-m3-i8 | PENDING | PENDING |
+| bge-m3 | PENDING | PENDING |
 | arctic-embed-m-v2-int8 | PENDING | PENDING |
 | qwen-reranker | PENDING | PENDING |
-| DINO | PENDING | PENDING |
-| multimodal Classic IR | PENDING | PENDING |
+| DINO | **N/A** — no production OVMS deployment | **N/A** — no production OVMS deployment |
+| multimodal Classic IR | **N/A** — export-only, not in the registry | **N/A** — export-only, not in the registry |
 
 Per-model tensor signature must be read from the live server, not assumed:
 `input_ids` / `attention_mask` / `position_ids` on the reranker, the real output
@@ -225,7 +315,22 @@ re-measured by this report.
 ### 6.2 Required 2026.3.1 measurements
 
 Fill every cell from the acceptance run. Qwen3 INT4 must cover all four lengths
-and both concurrency levels.
+and both concurrency levels. Produced by:
+
+```
+python scripts/ovms_acceptance_suite.py \
+    --gateway-base http://127.0.0.1:28012 \
+    --ovms-base    http://127.0.0.1:28342 \
+    --protocol kserve --label ovms-2026.3.1 \
+    --sections capability,matrix,long_text,reranker,zero_resident \
+    --out    .workbuddy-ai/artifacts/acceptance-20263.json \
+    --report .workbuddy-ai/artifacts/acceptance-20263.md
+```
+
+Run the identical command with `--protocol tfs`, `--label ovms-2026.1` and the
+2026.1 ports (28011/28341) for the comparison column. Text length is calibrated
+from the gateway's own `usage.prompt_tokens`, so the ladder measures tokens
+rather than assuming a characters-per-token ratio.
 
 | Metric | 256 tok | 512 tok | 1024 tok | ~4591 tok |
 | --- | --- | --- | --- | --- |
@@ -240,6 +345,11 @@ and both concurrency levels.
 | CPU memory peak | PENDING | PENDING | PENDING | PENDING |
 | CPU spillover occurred | PENDING | PENDING | PENDING | PENDING |
 | 5xx count | PENDING | PENDING | PENDING | PENDING |
+
+The harness reports HTTP status, latency, dimension, norm and 5xx count directly.
+GPU/CPU memory peak, spillover and backend latency are read from the OVMS
+container's own metrics during the same run and transcribed into the remaining
+rows; they are not synthesised.
 
 ### 6.3 Liveness gate (highest-priority acceptance item)
 
@@ -297,8 +407,13 @@ Run separately for `OVMS_PROTOCOL=tfs` and `OVMS_PROTOCOL=kserve`:
 | Concurrency | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
 | Reranker | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
 | Zero-resident | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
-| DINO | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
-| Multimodal | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
+| DINO | **N/A** — no production OVMS deployment | **N/A** — no production OVMS deployment |
+| Multimodal | **N/A** — export-only, not in the registry | **N/A** — export-only, not in the registry |
+| Failure counters | **PASS** (recorded baseline) | **PENDING** (Gate 3) |
+
+The Gate 2/3 columns are filled by `evaluate_gates()` in
+`scripts/ovms_acceptance_suite.py`, which is unit-tested offline. A dimension
+whose section did not run reports `N/A`; it never reports `PASS`.
 
 ---
 
@@ -324,4 +439,5 @@ Promotion itself waits for an explicit, separate authorisation. See
 | 2 | Provide/confirm the isolated VM used for Gate 2 | yes |
 | 3 | Authorise Gate 3 (Unraid `acc-*` stack, UHD730) once Gate 2 passes | yes |
 | 4 | Re-validate the `auto` detection ladder against the real 2026.3.1 server | yes |
-| 5 | CI cannot run 2026.3 GPU; GPU acceptance stays an Unraid-run report | informational |
+| 5 | Decide the fate of `qwen3-embedding-0.6b-int8`, which is served over `/v3/embeddings` and is therefore **not** covered by the TFS/KServe adapter | yes |
+| 6 | CI cannot run 2026.3 GPU; GPU acceptance stays an Unraid-run report | informational |

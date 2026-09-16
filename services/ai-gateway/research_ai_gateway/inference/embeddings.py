@@ -8,6 +8,10 @@ from ..config import (
     BGE_CHUNK_TOKENS,
     BGE_CHUNK_OVERLAP,
     BGE_BATCH_SIZE,
+    POOLED_MAX_TOTAL_TOKENS,
+    POOLED_CHUNK_TOKENS,
+    POOLED_CHUNK_OVERLAP,
+    POOLED_CHUNK_BATCH_SIZE,
     OVMS_TIMEOUT,
     ADAPTIVE_EMBEDDING_BATCHING,
     ADAPTIVE_BATCH_WAIT_MS,
@@ -358,6 +362,94 @@ def tokenize_qwen_texts(texts: List[str], tokenizer_path: str):
     return [future.result() for future in futures]
 
 
+def _qwen_add_special_tokens(tokenizer, content_ids: List[int]) -> List[int]:
+    if hasattr(tokenizer, "build_inputs_with_special_tokens"):
+        return list(tokenizer.build_inputs_with_special_tokens(content_ids))
+    if hasattr(tokenizer, "prepare_for_model"):
+        prepared = tokenizer.prepare_for_model(
+            content_ids,
+            add_special_tokens=True,
+            return_attention_mask=False,
+        )
+        return list(prepared.get("input_ids", content_ids))
+    raise HTTPException(
+        status_code=500,
+        detail="embedding tokenizer cannot rebuild special tokens for long-text chunks",
+    )
+
+
+def prepare_qwen_chunked_texts(texts: List[str], tokenizer_path: str):
+    """Prepare pooled-IR inputs without ever sending an oversized sequence.
+
+    Short inputs preserve the legacy tokenization byte-for-byte. Long logical
+    inputs are split into overlapping content-token windows; the caller later
+    merges those window vectors back into one vector per original text.
+    """
+    original_prepared = tokenize_qwen_texts(texts, tokenizer_path)
+    chunk_limit = max(8, int(POOLED_CHUNK_TOKENS))
+    max_total = max(chunk_limit, int(POOLED_MAX_TOTAL_TOKENS))
+    prepared = []
+    mapping = []
+    chunk_counts = [0 for _ in texts]
+    prompt_tokens = 0
+    tokenizer = None
+
+    for text_index, (text, initial) in enumerate(zip(texts, original_prepared, strict=True)):
+        input_ids, attention_mask = initial
+        logical_tokens = max(1, int(np.asarray(attention_mask, dtype=np.int64).sum()))
+        prompt_tokens += logical_tokens
+
+        if logical_tokens <= chunk_limit:
+            prepared.append(initial)
+            mapping.append((text_index, logical_tokens))
+            chunk_counts[text_index] += 1
+            continue
+
+        if tokenizer is None:
+            tokenizer = get_embedding_tokenizer(tokenizer_path)
+        encoded = tokenizer(
+            text or "",
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+        )
+        content_ids = list(encoded.get("input_ids", []))
+        if len(content_ids) > max_total:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"pooled-IR logical input has {len(content_ids)} tokens; "
+                    f"configured maximum is {max_total}"
+                ),
+            )
+
+        special_overhead = len(_qwen_add_special_tokens(tokenizer, []))
+        content_budget = max(1, chunk_limit - special_overhead)
+        overlap = max(0, min(int(POOLED_CHUNK_OVERLAP), content_budget - 1))
+        step = max(1, content_budget - overlap)
+
+        for start in range(0, len(content_ids), step):
+            content_chunk = content_ids[start : start + content_budget]
+            chunk_ids = _qwen_add_special_tokens(tokenizer, content_chunk)
+            if len(chunk_ids) > chunk_limit:
+                raise HTTPException(
+                    status_code=500,
+                    detail="long-text chunk exceeded configured pooled-IR inference window",
+                )
+            chunk_input_ids = np.asarray(chunk_ids, dtype=np.int64)
+            chunk_attention = np.ones(chunk_input_ids.shape, dtype=np.int64)
+            prepared.append((chunk_input_ids, chunk_attention))
+            # Weight by unique semantic content rather than duplicated special
+            # tokens. Overlap follows the same weighted-merge convention as the
+            # existing BGE long-text path.
+            mapping.append((text_index, max(1, len(content_chunk))))
+            chunk_counts[text_index] += 1
+            if start + content_budget >= len(content_ids):
+                break
+
+    return prepared, mapping, chunk_counts, prompt_tokens
+
+
 def _pad_qwen_prepared(prepared, tokenizer_path: str):
     if not prepared:
         return [], 0
@@ -400,23 +492,52 @@ def predict_pooled_ir(model_name: str, prepared, tokenizer_path: str):
 
 
 def pooled_ir_response(model_name: str, texts: List[str], response_model_name: str, tokenizer_path: str, broker=None):
-    prepared = tokenize_qwen_texts(texts, tokenizer_path)
-    if broker:
-        with broker.embedding_inference_lock:
-            # Hold the lease for the entire backend inference and use the
-            # concrete runtime alias selected by DeviceBroker.  Merely calling
-            # ensure_model_available() releases the lease before inference and
-            # then incorrectly addresses the unsuffixed logical model name,
-            # which breaks zero-resident and CPU-spillover operation.
-            with broker.lease(model_name) as active_model:
-                vectors, prompt_tokens = predict_pooled_ir(active_model, prepared, tokenizer_path)
-    else:
-        vectors, prompt_tokens = predict_pooled_ir(model_name, prepared, tokenizer_path)
+    prepared, mapping, chunk_counts, prompt_tokens = prepare_qwen_chunked_texts(texts, tokenizer_path)
+    chunk_vectors = []
+    batch_size = max(1, int(POOLED_CHUNK_BATCH_SIZE))
+    for start in range(0, len(prepared), batch_size):
+        batch = prepared[start : start + batch_size]
+        if broker:
+            # Lease each bounded chunk batch independently. This keeps the
+            # concrete zero-resident alias valid while preventing one long
+            # logical document from monopolizing the inference lock for its
+            # entire multi-window lifetime.
+            with broker.embedding_inference_lock:
+                with broker.lease(model_name) as active_model:
+                    vectors, _ = predict_pooled_ir(active_model, batch, tokenizer_path)
+        else:
+            vectors, _ = predict_pooled_ir(model_name, batch, tokenizer_path)
+        chunk_vectors.extend(np.asarray(vectors, dtype=np.float32))
+
+    grouped = [[] for _ in texts]
+    for vector, (text_index, weight) in zip(chunk_vectors, mapping, strict=True):
+        grouped[text_index].append((np.asarray(vector, dtype=np.float32), float(max(1, weight))))
+
+    merged_vectors = []
+    for text_index, items in enumerate(grouped):
+        if not items:
+            raise HTTPException(status_code=502, detail=f"missing pooled-IR embedding for input {text_index}")
+        if chunk_counts[text_index] == 1:
+            # Preserve exact short-text output semantics.
+            merged_vectors.append(items[0][0])
+            continue
+        merged = np.zeros_like(items[0][0], dtype=np.float32)
+        total_weight = 0.0
+        for vector, weight in items:
+            merged += vector * weight
+            total_weight += weight
+        if total_weight > 0:
+            merged /= total_weight
+        norm = float(np.linalg.norm(merged))
+        if norm > 0:
+            merged /= norm
+        merged_vectors.append(merged.astype(np.float32))
+
     return {
         "object": "list",
         "data": [
             {"object": "embedding", "index": idx, "embedding": vector.tolist()}
-            for idx, vector in enumerate(vectors)
+            for idx, vector in enumerate(merged_vectors)
         ],
         "model": response_model_name,
         "usage": {"prompt_tokens": prompt_tokens, "total_tokens": prompt_tokens},
@@ -677,6 +798,7 @@ class AdaptivePooledIRBatcher:
             "request_count": 0,
             "list_request_count": 0,
             "max_request_items": 0,
+            "long_text_requests": 0,
         }
         self._worker = threading.Thread(
             target=self._run,
@@ -699,6 +821,20 @@ class AdaptivePooledIRBatcher:
         prepared = qwen_tokenizer_executor.submit(_tokenize_qwen_text, text, tokenizer_path).result()
         input_ids, attention_mask = prepared
         token_count = max(1, int(sum(attention_mask)))
+        if token_count > max(8, int(POOLED_CHUNK_TOKENS)):
+            with self._stats_lock:
+                self._stats["request_count"] += 1
+                self._stats["max_request_items"] = max(self._stats["max_request_items"], 1)
+                self._stats["long_text_requests"] += 1
+                self._stats["token_sum"] += token_count
+                self._stats["max_tokens_seen"] = max(self._stats["max_tokens_seen"], token_count)
+            return pooled_ir_response(
+                model_name,
+                [text],
+                response_model_name,
+                tokenizer_path,
+                broker=self.broker,
+            )
         bucket, _, _ = self._policy(token_count)
         item = _AdaptiveEmbeddingItem(text, token_count, response_model_name)
         item.model_name = model_name
@@ -729,12 +865,31 @@ class AdaptivePooledIRBatcher:
 
     def submit_many(self, model_name: str, response_model_name: str, texts: List[str], tokenizer_path: str):
         prepared_items = tokenize_qwen_texts(texts, tokenizer_path)
+        token_counts = [
+            max(1, int(np.asarray(attention_mask, dtype=np.int64).sum()))
+            for _, attention_mask in prepared_items
+        ]
+        long_count = sum(count > max(8, int(POOLED_CHUNK_TOKENS)) for count in token_counts)
+        if long_count:
+            with self._stats_lock:
+                self._stats["request_count"] += 1
+                self._stats["list_request_count"] += 1
+                self._stats["max_request_items"] = max(self._stats["max_request_items"], len(texts))
+                self._stats["long_text_requests"] += long_count
+                self._stats["token_sum"] += sum(token_counts)
+                self._stats["max_tokens_seen"] = max(self._stats["max_tokens_seen"], max(token_counts))
+            return pooled_ir_response(
+                model_name,
+                texts,
+                response_model_name,
+                tokenizer_path,
+                broker=self.broker,
+            )
         items = []
         token_sum = 0
         max_tokens = 0
-        for text, prepared in zip(texts, prepared_items):
+        for text, prepared, token_count in zip(texts, prepared_items, token_counts, strict=True):
             input_ids, attention_mask = prepared
-            token_count = max(1, int(np.asarray(attention_mask, dtype=np.int64).sum()))
             bucket, _, _ = self._policy(token_count)
             item = _AdaptiveEmbeddingItem(text, token_count, response_model_name)
             item.model_name = model_name

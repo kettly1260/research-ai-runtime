@@ -73,6 +73,11 @@ services:
       - BGE_CHUNK_TOKENS=${BGE_CHUNK_TOKENS:-1024}
       - BGE_CHUNK_OVERLAP=${BGE_CHUNK_OVERLAP:-128}
       - BGE_BATCH_SIZE=${BGE_BATCH_SIZE:-8}
+      # ---- qwen pooled-IR long text (UHD730-qualified window) ----------------
+      - POOLED_MAX_TOTAL_TOKENS=${POOLED_MAX_TOTAL_TOKENS:-32768}
+      - POOLED_CHUNK_TOKENS=${POOLED_CHUNK_TOKENS:-1024}
+      - POOLED_CHUNK_OVERLAP=${POOLED_CHUNK_OVERLAP:-128}
+      - POOLED_CHUNK_BATCH_SIZE=${POOLED_CHUNK_BATCH_SIZE:-1}
       # ---- adaptive batching / broker budgets --------------------------------
       - ADAPTIVE_EMBEDDING_BATCHING=${ADAPTIVE_EMBEDDING_BATCHING:-1}
       - CPU_SEMAPHORE_LIMIT=${CPU_SEMAPHORE_LIMIT:-4}

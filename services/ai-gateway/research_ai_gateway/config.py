@@ -46,6 +46,14 @@ BGE_CHUNK_TOKENS = int(os.getenv("BGE_CHUNK_TOKENS", "1024"))
 BGE_CHUNK_OVERLAP = int(os.getenv("BGE_CHUNK_OVERLAP", "128"))
 BGE_BATCH_SIZE = int(os.getenv("BGE_BATCH_SIZE", "4"))
 
+# Qwen pooled-IR long-text settings. Logical requests may be much longer than
+# a single GPU inference window; they are chunked internally and merged back to
+# one embedding so callers keep the normal OpenAI-compatible API contract.
+POOLED_MAX_TOTAL_TOKENS = int(os.getenv("POOLED_MAX_TOTAL_TOKENS", "32768"))
+POOLED_CHUNK_TOKENS = int(os.getenv("POOLED_CHUNK_TOKENS", "1024"))
+POOLED_CHUNK_OVERLAP = int(os.getenv("POOLED_CHUNK_OVERLAP", "128"))
+POOLED_CHUNK_BATCH_SIZE = max(1, int(os.getenv("POOLED_CHUNK_BATCH_SIZE", "1")))
+
 # Adaptive batching settings
 ADAPTIVE_EMBEDDING_BATCHING = os.getenv("ADAPTIVE_EMBEDDING_BATCHING", "1") == "1"
 ADAPTIVE_BATCH_WAIT_MS = float(os.getenv("ADAPTIVE_BATCH_WAIT_MS", "8"))

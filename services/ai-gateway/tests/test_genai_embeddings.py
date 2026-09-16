@@ -66,6 +66,30 @@ class _FakeGenAITokenizer:
         return {"input_ids": [0] * max(1, len(words))}
 
 
+class _FakePooledTokenizer:
+    pad_token_id = 0
+    eos_token_id = 2
+
+    def __call__(
+        self,
+        text,
+        add_special_tokens=True,
+        truncation=False,
+        return_attention_mask=False,
+    ):
+        words = [w for w in str(text or "").split() if w]
+        ids = list(range(10, 10 + len(words)))
+        if add_special_tokens:
+            ids = self.build_inputs_with_special_tokens(ids)
+        payload = {"input_ids": ids}
+        if return_attention_mask:
+            payload["attention_mask"] = [1] * len(ids)
+        return payload
+
+    def build_inputs_with_special_tokens(self, token_ids):
+        return [1, *list(token_ids), 2]
+
+
 class _FakeResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
@@ -293,6 +317,85 @@ def test_genai_batcher_reports_backend_errors(monkeypatch):
         batcher.submit("m", "logical", "some text", "/tok")
     assert excinfo.value.status_code == 502
     assert batcher.stats()["errors"] == 1
+
+
+def test_pooled_ir_long_text_is_windowed_and_merged(monkeypatch):
+    monkeypatch.setattr(embeddings_mod, "get_embedding_tokenizer", lambda path: _FakePooledTokenizer())
+    monkeypatch.setattr(embeddings_mod, "POOLED_CHUNK_TOKENS", 8)
+    monkeypatch.setattr(embeddings_mod, "POOLED_CHUNK_OVERLAP", 2)
+    monkeypatch.setattr(embeddings_mod, "POOLED_MAX_TOTAL_TOKENS", 100)
+    monkeypatch.setattr(embeddings_mod, "POOLED_CHUNK_BATCH_SIZE", 1)
+
+    calls = []
+
+    def fake_predict(model_name, prepared, tokenizer_path):
+        assert len(prepared) == 1
+        ids, mask = prepared[0]
+        calls.append((len(ids), int(np.asarray(mask).sum())))
+        idx = float(len(calls))
+        return np.asarray([[idx, 1.0]], dtype=np.float32), int(np.asarray(mask).sum())
+
+    monkeypatch.setattr(embeddings_mod, "predict_pooled_ir", fake_predict)
+
+    text = "one two three four five six seven eight nine ten"
+    result = embeddings_mod.pooled_ir_response(
+        "qwen3-embedding-0.6b-int4-pooled",
+        [text],
+        "qwen3-embedding-0.6b-int4",
+        "/tok",
+    )
+
+    assert len(calls) == 2
+    assert all(length <= 8 for length, _ in calls)
+    assert result["usage"] == {"prompt_tokens": 12, "total_tokens": 12}
+    vector = np.asarray(result["data"][0]["embedding"], dtype=np.float32)
+    assert vector.shape == (2,)
+    assert np.isclose(np.linalg.norm(vector), 1.0)
+    expected = np.asarray([1.5, 1.0], dtype=np.float32)
+    expected /= np.linalg.norm(expected)
+    assert np.allclose(vector, expected)
+
+
+def test_adaptive_pooled_long_text_bypasses_worker(monkeypatch):
+    monkeypatch.setattr(embeddings_mod, "POOLED_CHUNK_TOKENS", 8)
+    monkeypatch.setattr(
+        embeddings_mod,
+        "_tokenize_qwen_text",
+        lambda text, path: (
+            np.arange(9, dtype=np.int64),
+            np.ones(9, dtype=np.int64),
+        ),
+    )
+    seen = {}
+
+    def fake_long_response(model_name, texts, response_model_name, tokenizer_path, broker=None):
+        seen.update(
+            model_name=model_name,
+            texts=texts,
+            response_model_name=response_model_name,
+            tokenizer_path=tokenizer_path,
+            broker=broker,
+        )
+        return {
+            "object": "list",
+            "data": [{"object": "embedding", "index": 0, "embedding": [1.0, 0.0]}],
+            "model": response_model_name,
+            "usage": {"prompt_tokens": 9, "total_tokens": 9},
+        }
+
+    monkeypatch.setattr(embeddings_mod, "pooled_ir_response", fake_long_response)
+    fake_broker = _FakeBroker(alias="qwen3-embedding-0.6b-int4-pooled__gpu")
+    batcher = embeddings_mod.AdaptivePooledIRBatcher(broker=fake_broker)
+
+    result = batcher.submit("pooled", "logical", "a b c d e f g h i", "/tok")
+
+    assert result["data"][0]["embedding"] == [1.0, 0.0]
+    assert seen["texts"] == ["a b c d e f g h i"]
+    assert seen["broker"] is fake_broker
+    stats = batcher.stats()
+    assert stats["long_text_requests"] == 1
+    assert stats["submitted_items"] == 0
+    assert stats["backend_batches"] == 0
 
 
 # --------------------------------------------------------------------------

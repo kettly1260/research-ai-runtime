@@ -45,7 +45,9 @@ def test_pooled_ir_response_holds_lease_and_uses_selected_alias(monkeypatch):
     def fake_predict(model_name, prepared_arg, tokenizer_path):
         seen["model_name"] = model_name
         seen["lease_active"] = fake_broker.lease_active
-        assert prepared_arg is prepared
+        assert len(prepared_arg) == 1
+        np.testing.assert_array_equal(prepared_arg[0][0], prepared[0][0])
+        np.testing.assert_array_equal(prepared_arg[0][1], prepared[0][1])
         return np.asarray([[0.25, 0.75]], dtype=np.float32), 2
 
     monkeypatch.setattr(embeddings_mod, "predict_pooled_ir", fake_predict)

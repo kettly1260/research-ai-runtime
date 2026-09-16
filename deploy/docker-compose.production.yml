@@ -26,8 +26,9 @@ services:
     container_name: ai-gateway
     restart: unless-stopped
     volumes:
-      # The modular package source lives here (see services/ai-gateway/Dockerfile.cutover):
-      # this bind mount shadows /app inside the image, so the package must be on the host.
+      # Keep the legacy /app bind mount intact as a rollback asset. The modular
+      # package itself is baked into the image under /opt/research-ai-gateway,
+      # so this mount no longer determines which modular source is executed.
       - /mnt/user/appdata/ovms/api:/app:rw
       - /mnt/user/appdata/ovms/models:/models:ro
       - /mnt/user/appdata/ovms/runtime:/ovms-config:rw

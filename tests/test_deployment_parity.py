@@ -190,8 +190,11 @@ def test_cutover_branch_runs_ci_and_builds_a_sha_pinned_ghcr_candidate():
 
 
 def test_cutover_dockerfile_does_not_copy_into_the_shadowed_app_dir():
-    """`/app` is bind-mounted at runtime, so baking sources there is a no-op."""
+    """Modular source must be immutable outside the legacy /app bind mount."""
     dockerfile = REPO_ROOT / "services" / "ai-gateway" / "Dockerfile.cutover"
+    text = dockerfile.read_text(encoding="utf-8")
+    assert "COPY services/ai-gateway/research_ai_gateway /opt/research-ai-gateway/research_ai_gateway" in text
+    assert "ENV PYTHONPATH=/opt/research-ai-gateway" in text
     for line in dockerfile.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.upper().startswith("COPY"):

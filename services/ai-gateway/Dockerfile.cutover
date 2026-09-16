@@ -24,10 +24,9 @@
 #       - /models/Snowflake/snowflake-arctic-embed-m-v2.0-test -> tokenizer.json
 #     which is why the running legacy container works today without either.
 #
-# IMPORTANT: at runtime `/app` is bind-mounted from
-# `/mnt/user/appdata/ovms/api`, which SHADOWS anything baked into `/app` here.
-# The package source therefore has to live on the host at
-# `/mnt/user/appdata/ovms/api/research_ai_gateway/`; do not COPY it into /app.
+# IMPORTANT: production still bind-mounts the legacy `/app` directory for
+# rollback compatibility. Modular source is therefore baked under `/opt`, not
+# `/app`, so the running code is immutable and tied to the GHCR image digest.
 
 ARG CUTOVER_BASE_IMAGE=ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915
 FROM ${CUTOVER_BASE_IMAGE}
@@ -35,6 +34,10 @@ FROM ${CUTOVER_BASE_IMAGE}
 WORKDIR /app
 
 RUN pip install --no-cache-dir "pillow>=10.0"
+
+COPY services/ai-gateway/research_ai_gateway /opt/research-ai-gateway/research_ai_gateway
+
+ENV PYTHONPATH=/opt/research-ai-gateway
 
 EXPOSE 8000
 

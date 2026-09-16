@@ -23,6 +23,11 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov
           pip install -e packages/contracts
           pip install -e services/ai-gateway
+          # The legacy research-media package metadata references README.md,
+          # but that README belongs to a separate in-flight service refactor
+          # and is intentionally not part of the gateway cutover branch.
+          # Supply an ephemeral metadata file without changing the source tree.
+          touch services/research-media/README.md
           pip install -e services/research-media
 
       - name: Run unit & regression tests

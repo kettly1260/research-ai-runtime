@@ -80,14 +80,14 @@ class _FakePooledTokenizer:
         words = [w for w in str(text or "").split() if w]
         ids = list(range(10, 10 + len(words)))
         if add_special_tokens:
-            ids = self.build_inputs_with_special_tokens(ids)
+            # Mirror the qualified Qwen2Tokenizer shape: no public
+            # build_inputs_with_special_tokens()/prepare_for_model(), but
+            # __call__(..., add_special_tokens=True) appends one wrapper token.
+            ids = [*ids, 2]
         payload = {"input_ids": ids}
         if return_attention_mask:
             payload["attention_mask"] = [1] * len(ids)
         return payload
-
-    def build_inputs_with_special_tokens(self, token_ids):
-        return [1, *list(token_ids), 2]
 
 
 class _FakeResponse:
@@ -347,11 +347,11 @@ def test_pooled_ir_long_text_is_windowed_and_merged(monkeypatch):
 
     assert len(calls) == 2
     assert all(length <= 8 for length, _ in calls)
-    assert result["usage"] == {"prompt_tokens": 12, "total_tokens": 12}
+    assert result["usage"] == {"prompt_tokens": 11, "total_tokens": 11}
     vector = np.asarray(result["data"][0]["embedding"], dtype=np.float32)
     assert vector.shape == (2,)
     assert np.isclose(np.linalg.norm(vector), 1.0)
-    expected = np.asarray([1.5, 1.0], dtype=np.float32)
+    expected = np.asarray([17.0 / 12.0, 1.0], dtype=np.float32)
     expected /= np.linalg.norm(expected)
     assert np.allclose(vector, expected)
 

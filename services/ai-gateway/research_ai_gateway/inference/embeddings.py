@@ -372,6 +372,36 @@ def _qwen_add_special_tokens(tokenizer, content_ids: List[int]) -> List[int]:
             return_attention_mask=False,
         )
         return list(prepared.get("input_ids", content_ids))
+
+    # Qwen2Tokenizer in the qualified production model deliberately does not
+    # expose build_inputs_with_special_tokens()/prepare_for_model(), while its
+    # __call__(..., add_special_tokens=True) still appends the model's wrapper
+    # token(s). Infer that stable prefix/suffix from a tiny tokenizer probe and
+    # apply it directly to already-tokenized content so chunk boundaries remain
+    # byte-for-byte token boundaries (no decode/re-tokenize round trip).
+    probe_text = "x"
+    raw_probe = list(
+        tokenizer(
+            probe_text,
+            add_special_tokens=False,
+            truncation=False,
+            return_attention_mask=False,
+        ).get("input_ids", [])
+    )
+    wrapped_probe = list(
+        tokenizer(
+            probe_text,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+        ).get("input_ids", [])
+    )
+    if raw_probe:
+        for start in range(0, len(wrapped_probe) - len(raw_probe) + 1):
+            if wrapped_probe[start : start + len(raw_probe)] == raw_probe:
+                prefix = wrapped_probe[:start]
+                suffix = wrapped_probe[start + len(raw_probe) :]
+                return [*prefix, *content_ids, *suffix]
     raise HTTPException(
         status_code=500,
         detail="embedding tokenizer cannot rebuild special tokens for long-text chunks",

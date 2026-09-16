@@ -534,73 +534,139 @@ def test_unrepresentable_payload_maps_to_502(monkeypatch):
 
 # --------------------------------------------------------------------------- #
 # auto detection
+#
+# The surfaces below are the VERBATIM responses captured from the pinned
+# acceptance images on 2026-09-17 (RUN_ID 20260917-kserve-0e7af82) with an empty
+# runtime config, i.e. the zero-resident state production normally sits in.
+# They are reproduced here so the ladder is pinned to observed behaviour rather
+# than to documentation.
 # --------------------------------------------------------------------------- #
 
-def test_auto_prefers_tfs_when_only_the_tfs_api_answers():
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (200, {"model_config_list": []}),
-            "/v2/health/ready": (404, None),
-        }
-    )
-    decision = probe_protocol(http)
+#: OVMS 2026.1: the Classic Model registry answers for an unknown model.
+SURFACE_2026_1 = {
+    "gets": {
+        "/v2/health/ready": (200, ""),
+        "/v1/config": (200, {}),
+        "/v1/models": (404, {"error": "Model with requested name is not found"}),
+        "/v1/models/qwen-reranker": (404, {"error": "Model with requested name is not found"}),
+        "/v2/models/qwen-reranker": (404, {"error": "Model with requested name is not found"}),
+        "/v2/models/qwen-reranker/ready": (404, {"error": "Model with requested name is not found"}),
+    },
+    "predict": (404, {"error": "Model with requested name is not found"}),
+}
+
+#: OVMS 2026.3.1: /v1/models/{m}:predict now routes to the MediaPipe handler.
+SURFACE_2026_3_1 = {
+    "gets": {
+        "/v2/health/ready": (200, ""),
+        "/v1/config": (200, {}),
+        "/v1/models": (200, {"data": [], "object": "list"}),
+        "/v1/models/qwen-reranker": (500, {"error": "Model not found"}),
+        "/v2/models/qwen-reranker": (404, {"error": "Model with requested name is not found"}),
+        "/v2/models/qwen-reranker/ready": (404, {"error": "Model with requested name is not found"}),
+    },
+    "predict": (412, {"error": "The file is not valid json - model field is missing in JSON body"}),
+}
+
+
+def _surface(surface, overrides=None, predict=None):
+    gets = dict(surface["gets"])
+    if overrides:
+        gets.update(overrides)
+    return _ScriptedHttp(gets, post_result=predict or surface["predict"])
+
+
+def test_auto_detects_ovms_2026_1_from_the_real_captured_surface():
+    decision = probe_protocol(_surface(SURFACE_2026_1))
     assert decision.protocol == "tfs"
-    assert decision.evidence["tfs_api_present"] is True
-    assert decision.evidence["kserve_api_present"] is False
+    assert decision.source == "auto_probe_predict_marker"
+    assert decision.evidence["tfs_predict_probe_classic_model_lookup"] is True
+    assert decision.evidence["tfs_predict_probe_mediapipe_rejection"] is False
 
 
-def test_auto_selects_kserve_when_the_tfs_config_api_is_gone():
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (404, None),
-            "/v2/health/ready": (200, {"status": "ready"}),
-        }
-    )
-    assert probe_protocol(http).protocol == "kserve"
-
-
-def test_auto_detects_mediapipe_rejection_and_picks_kserve():
-    """2026.3 routes /v1/models/{m}:predict to the MediaPipe graph handler."""
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (200, {"model_config_list": []}),
-            "/v2/health/ready": (200, {}),
-        },
-        post_result=(412, "The file is not valid json - model field is missing in JSON body"),
-    )
-    decision = probe_protocol(http)
+def test_auto_detects_ovms_2026_3_1_from_the_real_captured_surface():
+    decision = probe_protocol(_surface(SURFACE_2026_3_1))
     assert decision.protocol == "kserve"
+    assert decision.source == "auto_probe_predict_marker"
     assert decision.evidence["tfs_predict_probe_mediapipe_rejection"] is True
 
 
+def test_auto_does_not_flip_on_2026_1_when_nothing_is_resident():
+    """Regression guard for the defect found by Gate 2.
+
+    An earlier ladder required ``model_config_list`` to be present in the
+    ``/v1/config`` body.  In the zero-resident state that body is ``{}`` on
+    *both* OVMS versions, while ``/v2/health/ready`` answers 200 on both, so the
+    ladder resolved to ``kserve`` even against a 2026.1 server.  The predict
+    probe must decide instead.
+    """
+    surface = _surface(SURFACE_2026_1, overrides={"/v1/config": (200, {})})
+    decision = probe_protocol(surface)
+    assert decision.protocol == "tfs", "empty /v1/config must not flip 2026.1 to kserve"
+    assert decision.evidence["tfs_config_lists_models"] is False
+    assert decision.evidence["kserve_health_ready_status"] == 200
+
+
+def test_auto_still_detects_2026_1_when_models_are_resident():
+    surface = _surface(
+        SURFACE_2026_1,
+        overrides={"/v1/config": (200, {"model_config_list": [{"config": {"name": "bge-m3-i8__cpu"}}]})},
+    )
+    decision = probe_protocol(surface)
+    assert decision.protocol == "tfs"
+    assert decision.evidence["tfs_config_lists_models"] is True
+
+
 def test_auto_detects_mediapipe_graph_404_and_picks_kserve():
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (200, {"model_config_list": []}),
-            "/v2/health/ready": (200, {}),
-        },
-        post_result=(404, "Mediapipe graph definition with requested name is not found"),
+    """2026.3 can also answer the probe by naming the missing MediaPipe graph."""
+    surface = _surface(
+        SURFACE_2026_3_1,
+        predict=(404, {"error": "Mediapipe graph definition with requested name is not found"}),
     )
-    assert probe_protocol(http).protocol == "kserve"
+    assert probe_protocol(surface).protocol == "kserve"
 
 
-def test_auto_keeps_tfs_when_both_apis_answer_normally():
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (200, {"model_config_list": []}),
-            "/v2/health/ready": (200, {}),
-        },
-        post_result=(400, "Model with name __ovms_protocol_probe__ does not exist"),
-    )
-    assert probe_protocol(http).protocol == "tfs"
-
-
-def test_auto_fails_closed_when_no_api_answers(monkeypatch):
-    monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
-    http = _ScriptedHttp({})
-    with pytest.raises(ProtocolDetectionError):
+def test_auto_fails_closed_when_the_backend_is_unreachable():
+    http = _ScriptedHttp({}, post_result=(None, None))
+    with pytest.raises(ProtocolDetectionError) as exc:
         probe_protocol(http)
+    assert "unreachable" in str(exc.value)
 
+
+def test_auto_fails_closed_when_the_predict_probe_is_inconclusive():
+    """No marker and no resident models: refuse rather than guess a protocol."""
+    surface = _surface(
+        SURFACE_2026_1,
+        overrides={"/v1/config": (200, {})},
+        predict=(400, {"error": "Model with name __ovms_protocol_probe__ does not exist"}),
+    )
+    with pytest.raises(ProtocolDetectionError) as exc:
+        probe_protocol(surface)
+    assert "could not discriminate" in str(exc.value)
+
+
+def test_auto_falls_back_to_the_config_body_when_the_probe_is_inconclusive():
+    surface = _surface(
+        SURFACE_2026_1,
+        overrides={"/v1/config": (200, {"model_config_list": [{"config": {"name": "bge-m3-i8__gpu"}}]})},
+        predict=(500, {"error": "internal error"}),
+    )
+    decision = probe_protocol(surface)
+    assert decision.protocol == "tfs"
+    assert decision.source == "auto_probe_config_body"
+
+
+def test_auto_never_uses_a_model_that_could_be_cold_loaded():
+    """The probe must ask about a name that cannot exist, with an empty batch."""
+    http = _surface(SURFACE_2026_1)
+    probe_protocol(http)
+    posts = [path for method, path in http.calls if method == "POST"]
+    assert posts == ["/v1/models/__ovms_protocol_probe__:predict"]
+
+
+def test_auto_fails_closed_through_the_resolver_and_maps_to_502(monkeypatch):
+    monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
+    http = _ScriptedHttp({}, post_result=(None, None))
     with pytest.raises(HTTPException) as exc:
         resolve_adapter(http)
     assert exc.value.status_code == 502
@@ -609,12 +675,7 @@ def test_auto_fails_closed_when_no_api_answers(monkeypatch):
 
 def test_auto_detection_runs_once_and_is_cached(monkeypatch):
     monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (404, None),
-            "/v2/health/ready": (200, {}),
-        }
-    )
+    http = _surface(SURFACE_2026_3_1)
     assert resolve_adapter(http).name == "kserve"
     first_round = list(http.calls)
     assert resolve_adapter(http).name == "kserve"
@@ -625,12 +686,7 @@ def test_auto_detection_is_thread_safe_and_probes_once(monkeypatch):
     import threading
 
     monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
-    http = _ScriptedHttp(
-        {
-            "/v1/config": (404, None),
-            "/v2/health/ready": (200, {}),
-        }
-    )
+    http = _surface(SURFACE_2026_3_1)
     results = []
 
     def worker():
@@ -644,6 +700,7 @@ def test_auto_detection_is_thread_safe_and_probes_once(monkeypatch):
 
     assert results == ["kserve"] * 8
     assert sum(1 for method, _ in http.calls if method == "GET") == 2
+    assert sum(1 for method, _ in http.calls if method == "POST") == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -668,12 +725,11 @@ def test_diagnostics_report_unresolved_auto_before_first_use(monkeypatch):
 
 def test_diagnostics_report_effective_protocol_after_detection(monkeypatch):
     monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
-    resolve_adapter(
-        _ScriptedHttp({"/v1/config": (404, None), "/v2/health/ready": (200, {})})
-    )
+    resolve_adapter(_surface(SURFACE_2026_3_1))
     diagnostics = protocol_diagnostics()
     assert diagnostics["ovms_protocol_effective"] == "kserve"
-    assert diagnostics["ovms_protocol_source"] == "auto_probe"
+    assert diagnostics["ovms_protocol_source"] == "auto_probe_predict_marker"
+    assert diagnostics["ovms_protocol_evidence"]["tfs_predict_probe_mediapipe_rejection"] is True
 
 
 # --------------------------------------------------------------------------- #

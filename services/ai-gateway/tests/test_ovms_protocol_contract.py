@@ -74,9 +74,13 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self._record(None)
         if self.path == "/v1/config":
-            if self.server.tfs_config_present:
-                return self._send_json(200, {"model_config_list": []})
-            return self._send_text(404, "not found")
+            if not self.server.tfs_config_present:
+                return self._send_text(404, "not found")
+            if self.server.config_empty:
+                # Both OVMS 2026.1 and 2026.3.1 return {} here when no model is
+                # resident.  The body therefore cannot discriminate a protocol.
+                return self._send_json(200, {})
+            return self._send_json(200, {"model_config_list": []})
         if self.path == "/v2/health/ready":
             return self._send_json(200, {"status": "ready"})
         if self.path.startswith("/v2/models/") and self.path.endswith("/ready"):
@@ -105,6 +109,10 @@ class _Handler(BaseHTTPRequestHandler):
                     412,
                     "The file is not valid json - model field is missing in JSON body",
                 )
+            if not self.path.startswith(f"/v1/models/{MODEL}:predict"):
+                # OVMS 2026.1 answers an unknown model with the Classic Model
+                # registry error verbatim.  This is what the auto ladder keys on.
+                return self._send_json(404, {"error": "Model with requested name is not found"})
             instances = body.get("instances") or []
             rows = [item["input_ids"] for item in instances]
             self.server.observed_lengths.extend(len(row) for row in rows)
@@ -142,6 +150,7 @@ def _start_server(**flags):
     server.observed_lengths = []
     server.model_loaded = flags.get("model_loaded", True)
     server.tfs_config_present = flags.get("tfs_config_present", True)
+    server.config_empty = flags.get("config_empty", False)
     server.mediapipe_v1 = flags.get("mediapipe_v1", False)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -218,10 +227,12 @@ def test_both_protocols_produce_identical_vectors_over_real_http(fake_ovms, monk
 
 
 def test_auto_contract_detects_a_kserve_only_backend(monkeypatch):
+    """Reproduce the real OVMS 2026.3.1 surface: /v1/config answers 200 {} and
+    /v1/models/{m}:predict answers 412 with the MediaPipe marker."""
     monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     reset_protocol_cache()
-    server = _start_server(tfs_config_present=False)
+    server = _start_server(config_empty=True, mediapipe_v1=True)
     monkeypatch.setattr(ovms_client, "OVMS_BASE", f"http://127.0.0.1:{server.server_port}")
     monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
     try:
@@ -229,6 +240,26 @@ def test_auto_contract_detects_a_kserve_only_backend(monkeypatch):
         assert result["predictions"]
         assert protocol_mod.protocol_diagnostics()["ovms_protocol_effective"] == "kserve"
         assert server.recorded[-1]["path"] == f"/v2/models/{MODEL}/infer"
+    finally:
+        server.shutdown()
+        server.server_close()
+        reset_protocol_cache()
+
+
+def test_auto_contract_detects_a_2026_1_backend_in_the_zero_resident_state(monkeypatch):
+    """The regression Gate 2 caught: an empty /v1/config body on a server that
+    still serves the Classic Model REST API must resolve to tfs, not kserve."""
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    reset_protocol_cache()
+    server = _start_server(config_empty=True, mediapipe_v1=False)
+    monkeypatch.setattr(ovms_client, "OVMS_BASE", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setattr(protocol_mod, "OVMS_PROTOCOL", "auto")
+    try:
+        result = ovms_client.ovms_predict(MODEL, _payload(), timeout=10)
+        assert result["predictions"]
+        assert protocol_mod.protocol_diagnostics()["ovms_protocol_effective"] == "tfs"
+        assert server.recorded[-1]["path"] == f"/v1/models/{MODEL}:predict"
     finally:
         server.shutdown()
         server.server_close()

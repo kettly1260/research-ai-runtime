@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.15"
 
       - name: Install dependencies
         run: |
@@ -31,5 +31,7 @@ jobs:
           pip install -e services/research-media
 
       - name: Run unit & regression tests
+        env:
+          MEDIA_DATA_DIR: ${{ runner.temp }}/research-ai-runtime-media
         run: |
           pytest tests/ services/ai-gateway/tests/ services/research-media/tests/ -v --cov=services

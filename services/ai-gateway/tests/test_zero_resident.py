@@ -30,7 +30,11 @@ class _FakeBroker:
         self.lease_active = False
         self.lease_calls = []
 
-    def lease(self, model_name, preferred_device="GPU"):
+    def lease(self, model_name, preferred_device=None):
+        # The embedding paths must NOT choose a device themselves: the broker
+        # resolves it from the model registry (see
+        # test_broker_device_preference.py).  Recording ``None`` here is what
+        # pins that contract.
         self.lease_calls.append((model_name, preferred_device))
         return _FakeLease(self, self.alias)
 
@@ -64,7 +68,7 @@ def test_pooled_ir_response_holds_lease_and_uses_selected_alias(monkeypatch):
         "model_name": "qwen3-embedding-0.6b-int4-pooled__gpu",
         "lease_active": True,
     }
-    assert fake_broker.lease_calls == [("qwen3-embedding-0.6b-int4-pooled", "GPU")]
+    assert fake_broker.lease_calls == [("qwen3-embedding-0.6b-int4-pooled", None)]
     assert result["data"][0]["embedding"] == [0.25, 0.75]
     assert fake_broker.lease_active is False
 

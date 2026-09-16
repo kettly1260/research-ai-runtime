@@ -149,8 +149,45 @@ class DeviceBroker:
             time.sleep(0.1)
         return is_model_available(alias) == available
 
-    def _set_model_enabled(self, alias: str, enabled: bool, target_device: Optional[str] = None) -> bool:
-        """Enables or disables an internal model alias in OVMS runtime config."""
+    def _registry_device_preference(self, logical_model: str) -> str:
+        """Resolves the device the model registry declares for ``logical_model``.
+
+        ``main.py`` already reads ``preferred_device`` from the registry for every
+        inference route it owns, but the embedding paths used to call
+        ``lease(model_name)`` with no preference at all.  That silently reverted
+        them to the GPU default, so on a CPU-only deployment every embedding
+        request attempted a GPU alias first: the load could never succeed, the
+        caller paid a full ``_wait_for_model_state`` timeout, and the failed
+        alias was left in ``config.json``.  Resolving the preference here keeps a
+        single source of truth and stays GPU-first wherever the registry says so.
+
+        Accepts either the logical registry id or its ``ovms_model`` name, since
+        the embedding call sites hold the latter.
+        """
+        try:
+            for model_id, cfg in MODEL_REGISTRY.items():
+                if not isinstance(cfg, dict):
+                    continue
+                if model_id == logical_model or cfg.get("ovms_model") == logical_model:
+                    return str(cfg.get("preferred_device") or "GPU").upper()
+        except Exception:  # pragma: no cover - registry read failures fall back to GPU
+            pass
+        return "GPU"
+
+    def _set_model_enabled(
+        self,
+        alias: str,
+        enabled: bool,
+        target_device: Optional[str] = None,
+        wait: bool = True,
+    ) -> bool:
+        """Enables or disables an internal model alias in OVMS runtime config.
+
+        ``wait=False`` writes the config and returns immediately without waiting
+        for OVMS to reach the requested state.  It exists for the rollback path:
+        removing an alias that already failed to load must not block for another
+        full timeout.
+        """
         base_name, inferred_dev = parse_model_alias(alias)
         dev = target_device or inferred_dev
 
@@ -195,6 +232,8 @@ class DeviceBroker:
             except (OSError, ValueError, KeyError):
                 return False
 
+        if not wait:
+            return True
         if enabled:
             return self._wait_for_model_state(alias, True, max(OVMS_TIMEOUT, 30))
         return self._wait_for_model_state(alias, False, min(max(OVMS_TIMEOUT, 30), 60))
@@ -253,8 +292,18 @@ class DeviceBroker:
             else:
                 break
 
-    def lease(self, logical_model: str, preferred_device: str = "GPU") -> ModelLease:
-        """Acquires a model execution lease with true GPU-first, CPU spillover, and multi-model coexistence."""
+    def lease(self, logical_model: str, preferred_device: Optional[str] = None) -> ModelLease:
+        """Acquires a model execution lease with true GPU-first, CPU spillover, and multi-model coexistence.
+
+        ``preferred_device=None`` (the default) resolves the preference from the
+        model registry, which is the same source ``main.py`` uses.  Pass an
+        explicit ``"GPU"``/``"CPU"`` only to override the registry deliberately.
+        """
+        if preferred_device is None:
+            preferred_device = self._registry_device_preference(logical_model)
+        else:
+            preferred_device = str(preferred_device).upper()
+
         with self.model_state_lock:
             total_in_flight = sum(self.active_inferences.values()) + sum(self.queue_depth.values())
             if total_in_flight >= self.max_queue_depth:
@@ -292,6 +341,13 @@ class DeviceBroker:
                     self._evict_to_capacity(exclude=gpu_alias)
                     if not self.model_loaded.get(gpu_alias, False):
                         if not self._set_model_enabled(gpu_alias, True, target_device="GPU"):
+                            # The alias is registered in OVMS but never became
+                            # available.  Leaving it behind makes OVMS retry the
+                            # failing compile once per filesystem-poll interval
+                            # for the lifetime of the container, which both
+                            # floods the OVMS log and keeps the deployment out of
+                            # the zero-resident state.  Roll it back out.
+                            self._set_model_enabled(gpu_alias, False, wait=False)
                             should_spillover = True
                         else:
                             self.model_loaded[gpu_alias] = True
@@ -321,6 +377,7 @@ class DeviceBroker:
                 self._evict_to_capacity(exclude=cpu_alias)
                 if not self.model_loaded.get(cpu_alias, False):
                     if not self._set_model_enabled(cpu_alias, True, target_device="CPU"):
+                        self._set_model_enabled(cpu_alias, False, wait=False)
                         self.active_cpu_threads = max(0, self.active_cpu_threads - 1)
                         self.cpu_semaphore.release()
                         raise HTTPException(status_code=503, detail=f"Failed to load {cpu_alias} on CPU")

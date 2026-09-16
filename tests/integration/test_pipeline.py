@@ -42,22 +42,36 @@ def test_zero_resident_idle_unload():
 
 
 def test_device_broker_cpu_fallback():
-    """Verify Device Broker falls back to CPU if GPU loading fails."""
+    """Verify Device Broker falls back to CPU if GPU loading fails.
+
+    Also verifies the failed GPU alias is rolled back out of the runtime
+    config.  Without that rollback OVMS keeps retrying the failing compile once
+    per filesystem-poll interval for the lifetime of the container (579
+    occurrences in one acceptance run) and the deployment can never reach a
+    zero-resident state.
+    """
     with patch.object(ai_gateway_broker_mod, "is_model_available", return_value=False), \
          patch.object(DEVICE_BROKER, "_sync_model_loaded_state"), \
          patch.object(DEVICE_BROKER, "_evict_idle_models"), \
          patch.object(DEVICE_BROKER, "_evict_to_capacity"):
 
         calls = []
-        def mock_set_enabled(name, enabled, target_device="GPU"):
-            calls.append(target_device)
+        def mock_set_enabled(name, enabled, target_device="GPU", wait=True):
+            calls.append((name, enabled, target_device, wait))
+            if not enabled:
+                # Rollback of the failed alias must be non-blocking.
+                assert wait is False
+                return True
             return target_device == "CPU"
 
         with patch.object(DEVICE_BROKER, "_set_model_enabled", side_effect=mock_set_enabled):
             device_used = DEVICE_BROKER.ensure_model_available("bge-m3-i8", preferred_device="GPU")
             assert device_used == "CPU"
-            assert "GPU" in calls
-            assert "CPU" in calls
+            assert "GPU" in [c[2] for c in calls]
+            assert "CPU" in [c[2] for c in calls]
+            assert ("bge-m3-i8__gpu", False, "GPU", False) in calls, (
+                "the failed GPU alias must be removed from the runtime config"
+            )
 
 
 def test_parser_privacy_hard_boundary():

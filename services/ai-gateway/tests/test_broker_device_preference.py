@@ -162,6 +162,22 @@ def test_explicit_preferred_device_overrides_the_registry(tmp_path, monkeypatch)
     assert _names(runtime_path) == [f"{POOLED_BASE}__gpu"]
 
 
+def test_ensure_model_available_defers_to_registry_by_default(tmp_path, monkeypatch):
+    """The compatibility shim must not silently restore GPU-first routing."""
+    runtime_path = _prepare(
+        tmp_path,
+        monkeypatch,
+        {POOLED_LOGICAL: {"ovms_model": POOLED_BASE, "preferred_device": "CPU"}},
+    )
+    broker = DeviceBroker()
+    monkeypatch.setattr(
+        broker, "_wait_for_model_state", lambda alias, available, timeout: True
+    )
+
+    assert broker.ensure_model_available(POOLED_BASE) == "CPU"
+    assert _names(runtime_path) == [f"{POOLED_BASE}__cpu"]
+
+
 def test_registry_lookup_accepts_logical_id_and_defaults_to_gpu(tmp_path, monkeypatch):
     _prepare(
         tmp_path,

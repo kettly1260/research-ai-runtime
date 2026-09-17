@@ -427,8 +427,18 @@ class DeviceBroker:
                     self.metrics["evictions"] += 1
                     self._release_resources(alias)
 
-    def ensure_model_available(self, model_name: str, preferred_device: str = "GPU") -> str:
-        """Backward-compatible method returning target device ('GPU' or 'CPU')."""
+    def ensure_model_available(
+        self,
+        model_name: str,
+        preferred_device: Optional[str] = None,
+    ) -> str:
+        """Backward-compatible method returning the selected target device.
+
+        When no explicit override is supplied, defer to ``lease()`` so the
+        model registry remains the single source of truth for device
+        preference.  This avoids reintroducing the historical GPU-first trap
+        on CPU-only deployments.
+        """
         lease = self.lease(model_name, preferred_device=preferred_device)
         dev = lease.device
         self.release_lease(lease)

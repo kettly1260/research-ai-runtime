@@ -151,8 +151,34 @@ jobs:
           cache-from: type=gha,scope=cutover-base
           cache-to: type=gha,mode=max,scope=cutover-base
 
+  gateway-release-test:
+    if: ${{ github.ref == 'refs/heads/cutover-modular-ai-gateway' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.15"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pytest-cov
+          pip install -e packages/contracts
+          pip install -e services/ai-gateway
+          touch services/research-media/README.md
+          pip install -e services/research-media
+
+      - name: Run release regression tests
+        env:
+          MEDIA_DATA_DIR: ${{ runner.temp }}/research-ai-runtime-media
+        run: |
+          pytest tests/ services/ai-gateway/tests/ services/research-media/tests/ -v --cov=services
+
   build-gateway-cutover:
-    needs: build-gateway-cutover-base
+    needs: [build-gateway-cutover-base, gateway-release-test]
     if: ${{ github.ref == 'refs/heads/cutover-modular-ai-gateway' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     permissions:

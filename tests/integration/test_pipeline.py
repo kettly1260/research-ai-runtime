@@ -6,37 +6,19 @@ from unittest.mock import patch, AsyncMock
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.abspath("packages/contracts/src"))
-
-import importlib.util
-
-def load_service_module(mod_name: str, file_path: str):
-    spec = importlib.util.spec_from_file_location(mod_name, file_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-# Load AI Gateway broker
-broker_path = os.path.abspath("services/ai-gateway/app/broker.py")
-# To allow broker.py to import its relative dependencies, ensure ai-gateway is temporarily in sys.path
 sys.path.insert(0, os.path.abspath("services/ai-gateway"))
-for k in list(sys.modules.keys()):
-    if k == "app" or k.startswith("app."):
-        del sys.modules[k]
 
-from app.broker import DEVICE_BROKER, DeviceBroker
-from app import broker as ai_gateway_broker_mod
+from research_ai_gateway.broker import DEVICE_BROKER
+import research_ai_gateway.broker as ai_gateway_broker_mod
 
-# Now load research-media
-sys.path.pop(0)
-for k in list(sys.modules.keys()):
-    if k == "app" or k.startswith("app."):
-        del sys.modules[k]
+# Keep research-media on its existing package layout in this branch. The
+# research_media package migration belongs to the separate research-media work
+# and is intentionally excluded from the gateway cutover branch.
 sys.path.insert(0, os.path.abspath("services/research-media"))
 
 from app.main import app as media_app
 from app.parser.manager import PARSER_MANAGER
-from app.media.store import LanceMediaStore, MEDIA_STORE
+from app.media.store import LanceMediaStore
 from app.media.ingest import MEDIA_INGESTOR
 from app.media.search import MEDIA_SEARCH
 from contracts import ParseRequest, ParsedDocument, DocumentFigure
@@ -60,22 +42,36 @@ def test_zero_resident_idle_unload():
 
 
 def test_device_broker_cpu_fallback():
-    """Verify Device Broker falls back to CPU if GPU loading fails."""
+    """Verify Device Broker falls back to CPU if GPU loading fails.
+
+    Also verifies the failed GPU alias is rolled back out of the runtime
+    config.  Without that rollback OVMS keeps retrying the failing compile once
+    per filesystem-poll interval for the lifetime of the container (579
+    occurrences in one acceptance run) and the deployment can never reach a
+    zero-resident state.
+    """
     with patch.object(ai_gateway_broker_mod, "is_model_available", return_value=False), \
          patch.object(DEVICE_BROKER, "_sync_model_loaded_state"), \
          patch.object(DEVICE_BROKER, "_evict_idle_models"), \
          patch.object(DEVICE_BROKER, "_evict_to_capacity"):
 
         calls = []
-        def mock_set_enabled(name, enabled, target_device="GPU"):
-            calls.append(target_device)
+        def mock_set_enabled(name, enabled, target_device="GPU", wait=True):
+            calls.append((name, enabled, target_device, wait))
+            if not enabled:
+                # Rollback of the failed alias must be non-blocking.
+                assert wait is False
+                return True
             return target_device == "CPU"
 
         with patch.object(DEVICE_BROKER, "_set_model_enabled", side_effect=mock_set_enabled):
             device_used = DEVICE_BROKER.ensure_model_available("bge-m3-i8", preferred_device="GPU")
             assert device_used == "CPU"
-            assert "GPU" in calls
-            assert "CPU" in calls
+            assert "GPU" in [c[2] for c in calls]
+            assert "CPU" in [c[2] for c in calls]
+            assert ("bge-m3-i8__gpu", False, "GPU", False) in calls, (
+                "the failed GPU alias must be removed from the runtime config"
+            )
 
 
 def test_parser_privacy_hard_boundary():
@@ -111,9 +107,9 @@ def test_full_pipeline_parse_ingest_search(tmp_path, media_client):
     with patch.object(MEDIA_INGESTOR, "store", temp_store), \
          patch.object(MEDIA_SEARCH, "store", temp_store):
 
-        with patch("app.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
-             patch("app.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
-             patch("app.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
+        with patch.object(MEDIA_INGESTOR.gateway, "get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
+             patch.object(MEDIA_INGESTOR.gateway, "get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
+             patch.object(MEDIA_SEARCH.gateway, "get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
 
             mock_img_emb.return_value = [[0.05] * 512]
             mock_dino_emb.return_value = [[0.08] * 384]

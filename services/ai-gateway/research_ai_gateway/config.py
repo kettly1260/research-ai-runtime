@@ -13,6 +13,23 @@ OVMS_MODEL_CATALOG_PATH = os.getenv("OVMS_MODEL_CATALOG_PATH", "/ovms-config/mod
 MODEL_REGISTRY_PATH = os.getenv("MODEL_REGISTRY_PATH", "/ovms-config/model_registry.json")
 MODELS_CONFIG_PATH = os.getenv("MODELS_CONFIG_PATH", "/config/models.yaml")
 OVMS_CONFIG_RELOAD_URL = os.getenv("OVMS_CONFIG_RELOAD_URL", "{ovms_base}/v1/config/reload")
+# GenAI v3 (graph-backed) OpenAI-compatible embeddings endpoint.
+OVMS_GENAI_EMBEDDINGS_URL = os.getenv(
+    "OVMS_GENAI_EMBEDDINGS_URL", "{ovms_base}/v3/embeddings"
+)
+OVMS_CONFIG_UPDATE_MODE = os.getenv("OVMS_CONFIG_UPDATE_MODE", "poll").strip().lower()
+if OVMS_CONFIG_UPDATE_MODE not in {"poll", "api"}:
+    raise ValueError("OVMS_CONFIG_UPDATE_MODE must be 'poll' or 'api'")
+
+# OVMS wire protocol used for Classic Model inference.
+#   tfs    -> POST /v1/models/{model}:predict   (OVMS 2026.1, current production)
+#   kserve -> POST /v2/models/{model}/infer     (OVMS 2026.3.1, Classic Model REST API removed)
+#   auto   -> probe the backend once and cache the result; development,
+#             acceptance and CI only.  Production must pin an explicit value so
+#             a backend upgrade can never silently change the wire protocol.
+OVMS_PROTOCOL = os.getenv("OVMS_PROTOCOL", "tfs").strip().lower()
+if OVMS_PROTOCOL not in {"tfs", "kserve", "auto"}:
+    raise ValueError("OVMS_PROTOCOL must be 'tfs', 'kserve' or 'auto'")
 
 PINNED_MODELS = {
     item.strip()
@@ -38,6 +55,14 @@ BGE_MAX_TOTAL_TOKENS = int(os.getenv("BGE_MAX_TOTAL_TOKENS", "8192"))
 BGE_CHUNK_TOKENS = int(os.getenv("BGE_CHUNK_TOKENS", "1024"))
 BGE_CHUNK_OVERLAP = int(os.getenv("BGE_CHUNK_OVERLAP", "128"))
 BGE_BATCH_SIZE = int(os.getenv("BGE_BATCH_SIZE", "4"))
+
+# Qwen pooled-IR long-text settings. Logical requests may be much longer than
+# a single GPU inference window; they are chunked internally and merged back to
+# one embedding so callers keep the normal OpenAI-compatible API contract.
+POOLED_MAX_TOTAL_TOKENS = int(os.getenv("POOLED_MAX_TOTAL_TOKENS", "32768"))
+POOLED_CHUNK_TOKENS = int(os.getenv("POOLED_CHUNK_TOKENS", "1024"))
+POOLED_CHUNK_OVERLAP = int(os.getenv("POOLED_CHUNK_OVERLAP", "128"))
+POOLED_CHUNK_BATCH_SIZE = max(1, int(os.getenv("POOLED_CHUNK_BATCH_SIZE", "1")))
 
 # Adaptive batching settings
 ADAPTIVE_EMBEDDING_BATCHING = os.getenv("ADAPTIVE_EMBEDDING_BATCHING", "1") == "1"

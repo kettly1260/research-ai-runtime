@@ -1,6 +1,26 @@
+# Full-stack compose file for fresh/dev environments.
+#
+# ############################################################################
+# # DO NOT RUN THIS FILE ON THE PRODUCTION UNRAID HOST.                     #
+# #                                                                          #
+# # The `ovms` service below declares `container_name: ovms-server` with a    #
+# # command that does NOT match the running production container, so          #
+# # `docker compose up -d` would RECREATE (and therefore restart) OVMS.       #
+# #                                                                          #
+# # Production deploys the gateway only, via:                                 #
+# #   docker compose -f deploy/docker-compose.production.yml \                #
+# #       up -d --no-deps ai-gateway                                          #
+# ############################################################################
+
 services:
   ovms:
-    image: openvino/model_server:latest-gpu
+    # NEVER use `openvino/model_server:latest-gpu` in a deployment example.
+    # `latest-gpu` has already drifted from OVMS 2026.1 to 2026.3.1, which
+    # removes the Classic Model REST API this gateway's `tfs` protocol depends
+    # on.  A tag is not a compatibility contract: pin a validated tag, and for
+    # production pin the validated digest
+    # (openvino/model_server@sha256:<validated digest>).
+    image: ${OVMS_IMAGE:-openvino/model_server:2026.1-gpu}
     container_name: ovms-server
     restart: unless-stopped
     privileged: true
@@ -19,6 +39,7 @@ services:
       - UR_L0_USE_IMMEDIATE_COMMANDLISTS=1
     command: >
       --config_path /ovms-config/config.json
+      --file_system_poll_wait_seconds 1
       --rest_port 8001
     ports:
       - "${OVMS_REST_PORT:-28331}:8001"
@@ -45,11 +66,28 @@ services:
       - MODELS_CONFIG_PATH=/config/models.yaml
       - OVMS_CONFIG_PATH=/ovms-config/config.json
       - OVMS_MODEL_CATALOG_PATH=/ovms-config/model_catalog.json
+      - OVMS_CONFIG_UPDATE_MODE=${OVMS_CONFIG_UPDATE_MODE:-poll}
+      # Classic Model wire protocol: tfs (OVMS 2026.1) or kserve (OVMS 2026.3+).
+      # `auto` is for development/acceptance/CI only; production pins a value.
+      - OVMS_PROTOCOL=${OVMS_PROTOCOL:-tfs}
       - BGE_TOKENIZER_PATH=/tokenizers/bge-m3
       - RERANK_TOKENIZER_PATH=/tokenizers/qwen-reranker
-      - MODEL_IDLE_UNLOAD_SECONDS=${MODEL_IDLE_UNLOAD_SECONDS:-600}
+      - HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
+      # Production baseline values; see deploy/env.example for the rationale.
+      - MODEL_IDLE_UNLOAD_SECONDS=${MODEL_IDLE_UNLOAD_SECONDS:-1200}
       - MAX_LOADED_MODELS=${MAX_LOADED_MODELS:-2}
       - MODEL_IDLE_SWEEP_SECONDS=${MODEL_IDLE_SWEEP_SECONDS:-60}
+      - RERANK_STRICT_RECALL=${RERANK_STRICT_RECALL:-1}
+      - RERANK_MAX_DOCS=${RERANK_MAX_DOCS:-64}
+      - RERANK_MAX_LENGTH=${RERANK_MAX_LENGTH:-128}
+      - RERANK_MAX_CHARS=${RERANK_MAX_CHARS:-1000}
+      - RERANK_BATCH_SIZE=${RERANK_BATCH_SIZE:-1}
+      - RERANK_FALLBACK_MAX_LENGTH=${RERANK_FALLBACK_MAX_LENGTH:-96}
+      - RERANK_FALLBACK_TIMEOUT=${RERANK_FALLBACK_TIMEOUT:-180}
+      - BGE_MAX_TOTAL_TOKENS=${BGE_MAX_TOTAL_TOKENS:-8192}
+      - BGE_CHUNK_TOKENS=${BGE_CHUNK_TOKENS:-1024}
+      - BGE_CHUNK_OVERLAP=${BGE_CHUNK_OVERLAP:-128}
+      - BGE_BATCH_SIZE=${BGE_BATCH_SIZE:-8}
       - TOKENIZERS_PARALLELISM=true
     depends_on:
       - ovms
@@ -70,7 +108,8 @@ services:
       - "${RESEARCH_MEDIA_PORT:-28003}:8002"
     environment:
       - AI_GATEWAY_ENDPOINT=${AI_GATEWAY_ENDPOINT:-http://ai-gateway:8000}
-      - PARSER_CONFIG_PATH=/config/providers.yaml
+      - PARSER_CONFIG_PATH=${PARSER_CONFIG_PATH:-/config/providers.yaml}
+      - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/config/models.yaml}
       - MEDIA_DATA_DIR=/data/media.lance
       - MINERU_API_KEY=${MINERU_API_KEY:-}
       - MINERU_ENDPOINT=${MINERU_ENDPOINT:-}

@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Tuple
 import numpy as np
-import requests
 from fastapi import HTTPException
 from ..config import (
     RERANK_MAX_LENGTH,
@@ -14,6 +13,17 @@ from ..config import (
 )
 from ..tokenizers import get_rerank_tokenizer
 from .. import ovms_client
+
+
+RERANK_DEFAULT_INSTRUCTION = (
+    "Given a web search query, retrieve relevant passages that answer the query"
+)
+RERANK_PREFIX = (
+    '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query '
+    'and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n'
+    '<|im_start|>user\n'
+)
+RERANK_SUFFIX = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
 
 
 def extract_document_text(document: Any) -> str:
@@ -93,22 +103,42 @@ def run_ovms_rerank_batch(
     max_length: int = RERANK_MAX_LENGTH,
     timeout: int = OVMS_TIMEOUT,
 ) -> List[float]:
-    pairs = [[query, text] for _, text in batch_documents]
     rerank_tokenizer = get_rerank_tokenizer()
-    inputs = rerank_tokenizer(
-        pairs,
+    prefix_tokens = rerank_tokenizer.encode(RERANK_PREFIX, add_special_tokens=False)
+    suffix_tokens = rerank_tokenizer.encode(RERANK_SUFFIX, add_special_tokens=False)
+    prompt_budget = max(1, max(8, max_length) - len(prefix_tokens) - len(suffix_tokens))
+
+    formatted = [
+        (
+            f"<Instruct>: {RERANK_DEFAULT_INSTRUCTION}\n"
+            f"<Query>: {query}\n"
+            f"<Document>: {text}"
+        )
+        for _, text in batch_documents
+    ]
+    encoded = rerank_tokenizer(
+        formatted,
+        padding=False,
+        truncation="longest_first",
+        max_length=prompt_budget,
+        return_attention_mask=False,
+    )
+    rows = [
+        prefix_tokens + list(token_ids) + suffix_tokens
+        for token_ids in encoded["input_ids"]
+    ]
+    inputs = rerank_tokenizer.pad(
+        {"input_ids": rows},
         padding=True,
-        truncation=True,
-        max_length=max(8, max_length),
+        return_attention_mask=True,
         return_tensors="np",
     )
 
-    input_ids = inputs["input_ids"].astype(np.int64)
-    attention_mask = inputs["attention_mask"].astype(np.int64)
-    seq_len = input_ids.shape[1]
+    input_ids = np.asarray(inputs["input_ids"], dtype=np.int64)
+    attention_mask = np.asarray(inputs["attention_mask"], dtype=np.int64)
     batch = input_ids.shape[0]
-
-    position_ids = np.tile(np.arange(seq_len), (batch, 1)).astype(np.int64)
+    position_ids = np.cumsum(attention_mask, axis=1, dtype=np.int64) - 1
+    position_ids[attention_mask == 0] = 0
 
     payload = {"instances": []}
     for i in range(batch):
@@ -119,9 +149,34 @@ def run_ovms_rerank_batch(
         })
 
     resp = ovms_client.ovms_predict(model_name, payload, timeout=timeout)
-    logits = np.array(resp["predictions"])
-    scores = logits[:, -1, :].max(axis=1).tolist()
-    return scores
+    logits = np.asarray(resp["predictions"], dtype=np.float32)
+    if logits.ndim != 3 or logits.shape[0] != batch:
+        raise HTTPException(
+            status_code=502,
+            detail=f"unexpected reranker logits shape: {list(logits.shape)}",
+        )
+
+    true_token_id = rerank_tokenizer.convert_tokens_to_ids("yes")
+    false_token_id = rerank_tokenizer.convert_tokens_to_ids("no")
+    vocab_size = logits.shape[-1]
+    if (
+        not isinstance(true_token_id, int)
+        or not isinstance(false_token_id, int)
+        or true_token_id < 0
+        or false_token_id < 0
+        or true_token_id >= vocab_size
+        or false_token_id >= vocab_size
+    ):
+        raise HTTPException(status_code=500, detail="reranker yes/no token IDs are invalid")
+
+    final_logits = logits[:, -1, :]
+    true_logits = final_logits[:, true_token_id].astype(np.float64)
+    false_logits = final_logits[:, false_token_id].astype(np.float64)
+    # Exact two-class probability used by the official Qwen3-Reranker example:
+    # softmax([no_logit, yes_logit])[:, yes].  The stable sigmoid form avoids
+    # overflow while producing the same relevance score in [0, 1].
+    delta = np.clip(true_logits - false_logits, -60.0, 60.0)
+    return (1.0 / (1.0 + np.exp(-delta))).tolist()
 
 
 def call_rerank(model_name: str, query: str, docs: List[Any]) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:

@@ -1,0 +1,777 @@
+{
+  "label": "ovms-2026.3.1-kserve-cpu",
+  "protocol": "kserve",
+  "gateway_base": "http://192.168.22.102:28022",
+  "ovms_base": "http://192.168.22.102:28352",
+  "captured_at": "2026-09-16T18:53:05.702859+00:00",
+  "capability": {
+    "captured_at": "2026-09-16T18:53:06.355999+00:00",
+    "ovms_base": "http://192.168.22.102:28352",
+    "model": "qwen-reranker",
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/v2/health/live",
+        "note": "KServe liveness",
+        "status": 200,
+        "response": "",
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "note": "KServe readiness (auto signal 1)",
+        "status": 200,
+        "response": "",
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "note": "TFS config API (auto signal 2)",
+        "status": 200,
+        "response": {
+          "arctic-embed-m-v2-int8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "bge-m3-i8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen-reranker__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b-int4-pooled__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          }
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models",
+        "note": "TFS model listing",
+        "status": 200,
+        "response": {
+          "data": [],
+          "object": "list"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v3/embeddings",
+        "note": "GenAI v3 surface presence",
+        "status": 400,
+        "response": {
+          "error": "Invalid request URL"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/qwen-reranker",
+        "note": "TFS model metadata",
+        "status": 500,
+        "response": {
+          "error": "Model not found"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker",
+        "note": "KServe model metadata",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker/ready",
+        "note": "KServe per-model readiness",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/qwen-reranker:predict",
+        "body": {
+          "instances": []
+        },
+        "note": "negative probe: MediaPipe marker tie-breaker (auto signal 3)",
+        "status": 412,
+        "response": {
+          "error": "The file is not valid json - model field is missing in JSON body"
+        },
+        "error": null
+      },
+      {
+        "method": "POST",
+        "path": "/v2/models/qwen-reranker/infer",
+        "body": {
+          "inputs": []
+        },
+        "note": "KServe infer presence",
+        "status": 400,
+        "response": {
+          "error": "Invalid JSON structure, missing inputs"
+        },
+        "error": null
+      }
+    ],
+    "auto_decision": {
+      "protocol": "kserve",
+      "source": "auto_probe_predict_marker",
+      "evidence": {
+        "kserve_health_ready_status": 200,
+        "tfs_config_status": 200,
+        "tfs_config_lists_models": false,
+        "tfs_predict_probe_status": 412,
+        "tfs_predict_probe_mediapipe_rejection": true,
+        "tfs_predict_probe_classic_model_lookup": false
+      }
+    },
+    "auto_decision_error": null,
+    "inference_probe": null,
+    "raw_calls": [
+      {
+        "method": "GET",
+        "path": "/v2/health/live",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.032,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.047,
+        "json": {
+          "arctic-embed-m-v2-int8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "bge-m3-i8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen-reranker__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b-int4-pooled__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          }
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {
+          "data": [],
+          "object": "list"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v3/embeddings",
+        "status": 400,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Invalid request URL"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/qwen-reranker",
+        "status": 500,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {
+          "error": "Model not found"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker/ready",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/qwen-reranker:predict",
+        "status": 412,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {
+          "error": "The file is not valid json - model field is missing in JSON body"
+        },
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v2/models/qwen-reranker/infer",
+        "status": 400,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Invalid JSON structure, missing inputs"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "arctic-embed-m-v2-int8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "bge-m3-i8__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen-reranker__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b-int4-pooled__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          },
+          "qwen3-embedding-0.6b__cpu": {
+            "model_version_status": [
+              {
+                "version": "1",
+                "state": "END",
+                "status": {
+                  "error_code": "OK",
+                  "error_message": "OK"
+                }
+              }
+            ]
+          }
+        },
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/__ovms_protocol_probe__:predict",
+        "status": 412,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "The file is not valid json - model field is missing in JSON body"
+        },
+        "body": null
+      }
+    ],
+    "label": "ovms-2026.3.1-kserve-cpu"
+  },
+  "model_matrix": [
+    {
+      "model": "qwen3-embedding-0.6b-int4",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 3.406,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 5,
+      "error": null
+    },
+    {
+      "model": "qwen3-embedding-0.6b-int8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 2.875,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 5,
+      "error": null
+    },
+    {
+      "model": "bge-m3-i8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 6.625,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "bge-m3",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 0.734,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "arctic-embed-m-v2-int8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 10.594,
+      "dim": 768,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "qwen-reranker",
+      "kind": "rerank",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 55.781,
+      "dim": null,
+      "norm": null,
+      "error": null
+    },
+    {
+      "model": "DINO",
+      "kind": "image_embedding",
+      "required": false,
+      "status": "N/A",
+      "note": "no production OVMS deployment (official DINOv3 blocked on Meta gated weights)"
+    },
+    {
+      "model": "multimodal Classic IR",
+      "kind": "image_embedding",
+      "required": false,
+      "status": "N/A",
+      "note": "export-only track; not present in the production registry"
+    }
+  ],
+  "long_text": [
+    {
+      "target_tokens": 256,
+      "actual_tokens": 252,
+      "single": {
+        "http": 200,
+        "seconds": 1.25,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 252,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.062,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 0.375,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 252,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 0.703,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 252,
+          "error": null
+        }
+      ],
+      "wall_seconds": 0.703,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.063,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 512,
+      "actual_tokens": 512,
+      "single": {
+        "http": 200,
+        "seconds": 0.813,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 512,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.047,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 0.812,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 512,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 1.531,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 512,
+          "error": null
+        }
+      ],
+      "wall_seconds": 1.531,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.047,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 1024,
+      "actual_tokens": 1022,
+      "single": {
+        "http": 200,
+        "seconds": 2.5,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 1022,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.844,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 2.172,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 1022,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 4.656,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 1022,
+          "error": null
+        }
+      ],
+      "wall_seconds": 4.656,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.062,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 4591,
+      "actual_tokens": 4592,
+      "single": {
+        "http": 200,
+        "seconds": 10.328,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4592,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.047,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 20.187,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 4592,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 16.859,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 4592,
+          "error": null
+        }
+      ],
+      "wall_seconds": 20.187,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.079,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    }
+  ],
+  "reranker": {
+    "http": 200,
+    "seconds": 56.64,
+    "scores": {
+      "Biology is the study of living organisms.": 0.993563324763129,
+      "The Eiffel Tower is in Paris.": 3.076311903888812e-05
+    },
+    "ordering_ok": true,
+    "range_ok": true,
+    "error": null,
+    "biology_score": 0.993563324763129,
+    "eiffel_score": 3.076311903888812e-05
+  },
+  "zero_resident": {
+    "initial_loaded": [
+      "qwen-reranker__cpu",
+      "qwen3-embedding-0.6b-int4-pooled__cpu"
+    ],
+    "after_request": [
+      "qwen3-embedding-0.6b-int4-pooled__cpu"
+    ],
+    "unloaded": true,
+    "unload_seconds": 95.656,
+    "error": null
+  },
+  "counters": {
+    "http_5xx": 0,
+    "exceptions": 0
+  },
+  "exception_log": [],
+  "retry_log": [
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28022/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    }
+  ],
+  "gates": {
+    "Compatibility": "PASS",
+    "Correctness": "PASS",
+    "Long-text liveness": "PASS",
+    "Concurrency": "PASS",
+    "Reranker": "PASS",
+    "Zero-resident": "PASS",
+    "Failure counters": "PASS"
+  }
+}

@@ -1,0 +1,159 @@
+# ############################################################################
+# # ISOLATED ACCEPTANCE STACK -- PHASE 2 ONLY. DO NOT START THIS FILE UNTIL   #
+# # THE ISOLATED-VM CPU / PROTOCOL / FUNCTIONAL GATE HAS PASSED.              #
+# #                                                                          #
+# # Starting it earlier is a process violation, and a VM PASS is not a GPU    #
+# # acceptance PASS: this stack is the only place UHD730 behaviour is judged. #
+# ############################################################################
+#
+# Purpose
+# -------
+# Compare the validated OVMS 2026.1 (TFS) baseline against OVMS 2026.3.1
+# (KServe v2) on the real UHD730, without touching anything production runs.
+#
+# Hard isolation rules (enforced by this file):
+#   * own container names      acc-ovms-2026{1,3} / acc-gateway-2026{1,3}
+#   * own REST ports           28341 (2026.1) / 28342 (2026.3)  vs production 28331
+#   * own gateway ports        28011 (2026.1) / 28012 (2026.3)  vs production 28001
+#   * own runtime config dirs  /mnt/user/appdata/_acc-ovms-2026{1,3}/runtime
+#   * own docker network       acc_ai_network (NOT the production `ai_network`)
+#
+# The acceptance gateways MUST NOT mount /mnt/user/appdata/ovms/runtime.  The
+# production runtime config is the live model-residency state of the production
+# OVMS server; a broker write from an acceptance gateway would load/unload
+# production models.  Models and tokenizers are the only shared assets, and they
+# are mounted read-only.
+#
+# Pin by digest, never by `latest-gpu`:
+#   ACC_OVMS_20261_IMAGE=openvino/model_server@sha256:22f92a1a5ad6784384e47296c43bde239887a623e75de45b0e1802659de416a6
+#   ACC_OVMS_20263_IMAGE=openvino/model_server@sha256:<validated 2026.3.1 digest>
+#
+# Seed each runtime directory once before the first start:
+#   mkdir -p /mnt/user/appdata/_acc-ovms-20263/runtime
+#   cp /mnt/user/appdata/ovms/runtime/model_catalog.json \
+#      /mnt/user/appdata/_acc-ovms-20263/runtime/
+#   cp /mnt/user/appdata/ovms/runtime/model_registry.json \
+#      /mnt/user/appdata/_acc-ovms-20263/runtime/
+#   printf '{"model_config_list": []}\n' \
+#      > /mnt/user/appdata/_acc-ovms-20263/runtime/config.json
+#
+# Start one stack at a time, for example:
+#   docker compose -f deploy/docker-compose.acceptance-20263.yml up -d \
+#       acc-ovms-20263 acc-gateway-20263
+
+x-ovms-environment: &ovms-environment
+  ONEAPI_DEVICE_SELECTOR: level_zero:0
+  ZES_ENABLE_SYSMAN: "1"
+  SYCL_CACHE_PERSISTENT: "1"
+  SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS: "1"
+  UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS: "1"
+  SYCL_PI_LEVEL_ZERO_DEVICE_SCOPE_EVENTS: "0"
+  UR_L0_USE_IMMEDIATE_COMMANDLISTS: "1"
+
+x-gateway-environment: &gateway-environment
+  OVMS_TIMEOUT: ${OVMS_TIMEOUT:-180}
+  OVMS_CONFIG_PATH: /ovms-config/config.json
+  OVMS_MODEL_CATALOG_PATH: /ovms-config/model_catalog.json
+  MODEL_REGISTRY_PATH: /ovms-config/model_registry.json
+  MODELS_CONFIG_PATH: /opt/research-ai-gateway/config/models.yaml
+  # Filesystem polling (OVMS default 1s) keeps broker load/unload local.
+  OVMS_CONFIG_UPDATE_MODE: poll
+  MODEL_IDLE_UNLOAD_SECONDS: ${MODEL_IDLE_UNLOAD_SECONDS:-120}
+  MODEL_IDLE_SWEEP_SECONDS: ${MODEL_IDLE_SWEEP_SECONDS:-10}
+  MAX_LOADED_MODELS: ${MAX_LOADED_MODELS:-2}
+  BGE_TOKENIZER_PATH: /tokenizers/bge-m3
+  RERANK_TOKENIZER_PATH: /tokenizers/qwen-reranker
+  HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+  TOKENIZERS_PARALLELISM: "true"
+
+services:
+  # ---------------------------------------------------------------- 2026.1 GPU
+  acc-ovms-20261:
+    image: ${ACC_OVMS_20261_IMAGE:?pin the validated OVMS 2026.1 digest}
+    container_name: acc-ovms-20261
+    restart: "no"
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/_acc-ovms-20261/runtime:/ovms-config:rw
+    environment:
+      <<: *ovms-environment
+    command: >
+      --config_path /ovms-config/config.json
+      --file_system_poll_wait_seconds 1
+      --rest_port 8001
+    ports:
+      - "${ACC_OVMS_20261_PORT:-28341}:8001"
+    networks:
+      - acc_ai_network
+
+  acc-gateway-20261:
+    image: ${ACC_GATEWAY_IMAGE:-research-ai-runtime-gateway:kserve-acceptance}
+    container_name: acc-gateway-20261
+    restart: "no"
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/ovms/tokenizers:/tokenizers:ro
+      - /mnt/user/appdata/_acc-ovms-20261/runtime:/ovms-config:rw
+    ports:
+      - "${ACC_GATEWAY_20261_PORT:-28011}:8000"
+    environment:
+      <<: *gateway-environment
+      OVMS_BASE: http://acc-ovms-20261:8001
+      # Explicit, never `auto`: an acceptance run must exercise the protocol it
+      # claims to exercise.
+      OVMS_PROTOCOL: tfs
+    depends_on:
+      - acc-ovms-20261
+    networks:
+      - acc_ai_network
+
+  # ---------------------------------------------------------------- 2026.3 GPU
+  acc-ovms-20263:
+    image: ${ACC_OVMS_20263_IMAGE:?pin the validated OVMS 2026.3.1 digest}
+    container_name: acc-ovms-20263
+    restart: "no"
+    privileged: true
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/_acc-ovms-20263/runtime:/ovms-config:rw
+    environment:
+      <<: *ovms-environment
+    command: >
+      --config_path /ovms-config/config.json
+      --file_system_poll_wait_seconds 1
+      --rest_port 8001
+    ports:
+      - "${ACC_OVMS_20263_PORT:-28342}:8001"
+    networks:
+      - acc_ai_network
+
+  acc-gateway-20263:
+    image: ${ACC_GATEWAY_IMAGE:-research-ai-runtime-gateway:kserve-acceptance}
+    container_name: acc-gateway-20263
+    restart: "no"
+    volumes:
+      - /mnt/user/appdata/ovms/models:/models:ro
+      - /mnt/user/appdata/ovms/tokenizers:/tokenizers:ro
+      - /mnt/user/appdata/_acc-ovms-20263/runtime:/ovms-config:rw
+    ports:
+      - "${ACC_GATEWAY_20263_PORT:-28012}:8000"
+    environment:
+      <<: *gateway-environment
+      OVMS_BASE: http://acc-ovms-20263:8001
+      OVMS_PROTOCOL: kserve
+    depends_on:
+      - acc-ovms-20263
+    networks:
+      - acc_ai_network
+
+networks:
+  # Dedicated bridge network: acceptance containers must not be able to resolve
+  # production container names, and production containers must not be reachable
+  # from acceptance traffic by accident.
+  acc_ai_network:
+    name: acc_ai_network

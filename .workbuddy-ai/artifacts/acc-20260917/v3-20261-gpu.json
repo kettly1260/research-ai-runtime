@@ -1,0 +1,86 @@
+{
+  "gateway_base": "http://192.168.22.102:28031",
+  "ovms_base": "http://192.168.22.102:28361",
+  "gateway_model": "qwen3-embedding-0.6b-int8",
+  "trust_env_proxy": false,
+  "captured_at": "2026-09-16T19:15:07+00:00",
+  "get_endpoint": {
+    "http": 400,
+    "transport_error": null,
+    "body": {
+      "error": "Invalid request URL"
+    }
+  },
+  "post_without_model": {
+    "http": 412,
+    "seconds": 0.038,
+    "transport_error": null,
+    "body": {
+      "error": "The file is not valid json - model field is missing in JSON body"
+    }
+  },
+  "broker_aliases_before": [
+    "qwen3-embedding-0.6b__gpu"
+  ],
+  "alias_used": "qwen3-embedding-0.6b__gpu",
+  "warmup_via_gateway": {
+    "http": 200,
+    "seconds": 12.125,
+    "transport_error": null
+  },
+  "first_call": {
+    "http": 200,
+    "seconds": 0.051,
+    "transport_error": null,
+    "count": 1,
+    "dim": 1024,
+    "all_finite": true,
+    "norm": 0.999705,
+    "resident_before_call": true,
+    "kind": "warm"
+  },
+  "second_call": {
+    "http": 200,
+    "seconds": 0.049,
+    "transport_error": null,
+    "count": 1,
+    "dim": 1024,
+    "all_finite": true,
+    "norm": 0.999705,
+    "resident_before_call": true,
+    "kind": "warm"
+  },
+  "broker_aliases_after": [
+    "qwen3-embedding-0.6b__gpu"
+  ],
+  "gateway_cold_warm": {
+    "waited_for_unload": {
+      "unloaded": true,
+      "waited_seconds": 5.219
+    },
+    "cold": {
+      "http": 200,
+      "seconds": 0.085,
+      "transport_error": null,
+      "count": 1,
+      "dim": 1024,
+      "all_finite": true,
+      "norm": 1.000317,
+      "kind": "cold",
+      "resident_before_call": false
+    },
+    "warm": {
+      "http": 200,
+      "seconds": 0.063,
+      "transport_error": null,
+      "count": 1,
+      "dim": 1024,
+      "all_finite": true,
+      "norm": 1.000317,
+      "kind": "warm",
+      "resident_before_call": true
+    }
+  },
+  "verdict": "PASS",
+  "label": "ovms-2026.1-tfs-gpu"
+}

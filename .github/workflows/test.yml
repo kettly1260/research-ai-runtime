@@ -2,7 +2,7 @@ name: Tests & Lint
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, cutover-modular-ai-gateway ]
   pull_request:
     branches: [ main ]
 
@@ -15,7 +15,7 @@ jobs:
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.11.15"
 
       - name: Install dependencies
         run: |
@@ -23,8 +23,15 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov
           pip install -e packages/contracts
           pip install -e services/ai-gateway
+          # The legacy research-media package metadata references README.md,
+          # but that README belongs to a separate in-flight service refactor
+          # and is intentionally not part of the gateway cutover branch.
+          # Supply an ephemeral metadata file without changing the source tree.
+          touch services/research-media/README.md
           pip install -e services/research-media
 
       - name: Run unit & regression tests
+        env:
+          MEDIA_DATA_DIR: ${{ runner.temp }}/research-ai-runtime-media
         run: |
           pytest tests/ services/ai-gateway/tests/ services/research-media/tests/ -v --cov=services

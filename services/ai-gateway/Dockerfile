@@ -12,29 +12,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    transformers \
-    tokenizers \
-    sentencepiece \
-    requests \
-    httpx \
-    numpy \
-    pydantic \
-    pyyaml \
-    pillow \
-    'protobuf>=4.25,<6'
-
-# Copy contracts and install
+# Install contracts
 COPY packages/contracts /packages/contracts
-RUN pip install --no-cache-dir -e /packages/contracts
+RUN pip install --no-cache-dir /packages/contracts
 
-# Copy service code
-COPY services/ai-gateway/app /app/app
-COPY services/ai-gateway/app/main.py /app/main.py
+# Install service dependencies from pyproject.toml
+COPY services/ai-gateway/pyproject.toml /app/pyproject.toml
+COPY services/ai-gateway/README.md /app/README.md
+COPY services/ai-gateway/research_ai_gateway /app/research_ai_gateway
+RUN pip install --no-cache-dir /app
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "research_ai_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]

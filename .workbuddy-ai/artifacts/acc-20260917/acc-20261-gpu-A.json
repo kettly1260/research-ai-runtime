@@ -1,0 +1,573 @@
+{
+  "label": "ovms-2026.1-tfs-gpu",
+  "protocol": "tfs",
+  "gateway_base": "http://192.168.22.102:28031",
+  "ovms_base": "http://192.168.22.102:28361",
+  "captured_at": "2026-09-16T19:02:54.823395+00:00",
+  "capability": {
+    "captured_at": "2026-09-16T19:02:56.624383+00:00",
+    "ovms_base": "http://192.168.22.102:28361",
+    "model": "qwen-reranker",
+    "endpoints": [
+      {
+        "method": "GET",
+        "path": "/v2/health/live",
+        "note": "KServe liveness",
+        "status": 200,
+        "response": "",
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "note": "KServe readiness (auto signal 1)",
+        "status": 200,
+        "response": "",
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "note": "TFS config API (auto signal 2)",
+        "status": 200,
+        "response": {},
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models",
+        "note": "TFS model listing",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v3/embeddings",
+        "note": "GenAI v3 surface presence",
+        "status": 400,
+        "response": {
+          "error": "Invalid request URL"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/qwen-reranker",
+        "note": "TFS model metadata",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker",
+        "note": "KServe model metadata",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker/ready",
+        "note": "KServe per-model readiness",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/qwen-reranker:predict",
+        "body": {
+          "instances": []
+        },
+        "note": "negative probe: MediaPipe marker tie-breaker (auto signal 3)",
+        "status": 404,
+        "response": {
+          "error": "Model with requested name is not found"
+        },
+        "error": null
+      },
+      {
+        "method": "POST",
+        "path": "/v2/models/qwen-reranker/infer",
+        "body": {
+          "inputs": []
+        },
+        "note": "KServe infer presence",
+        "status": 400,
+        "response": {
+          "error": "Invalid JSON structure, missing inputs"
+        },
+        "error": null
+      }
+    ],
+    "auto_decision": {
+      "protocol": "tfs",
+      "source": "auto_probe_predict_marker",
+      "evidence": {
+        "kserve_health_ready_status": 200,
+        "tfs_config_status": 200,
+        "tfs_config_lists_models": false,
+        "tfs_predict_probe_status": 404,
+        "tfs_predict_probe_mediapipe_rejection": false,
+        "tfs_predict_probe_classic_model_lookup": true
+      }
+    },
+    "auto_decision_error": null,
+    "inference_probe": null,
+    "raw_calls": [
+      {
+        "method": "GET",
+        "path": "/v2/health/live",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.094,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {},
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v3/embeddings",
+        "status": 400,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Invalid request URL"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/qwen-reranker",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/models/qwen-reranker/ready",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/qwen-reranker:predict",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v2/models/qwen-reranker/infer",
+        "status": 400,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": {
+          "error": "Invalid JSON structure, missing inputs"
+        },
+        "body": null
+      },
+      {
+        "method": "GET",
+        "path": "/v2/health/ready",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.016,
+        "json": null,
+        "body": ""
+      },
+      {
+        "method": "GET",
+        "path": "/v1/config",
+        "status": 200,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.0,
+        "json": {},
+        "body": null
+      },
+      {
+        "method": "POST",
+        "path": "/v1/models/__ovms_protocol_probe__:predict",
+        "status": 404,
+        "content_type": "application/json; charset=utf-8",
+        "elapsed_s": 0.015,
+        "json": {
+          "error": "Model with requested name is not found"
+        },
+        "body": null
+      }
+    ],
+    "label": "ovms-2026.1-tfs-gpu"
+  },
+  "model_matrix": [
+    {
+      "model": "qwen3-embedding-0.6b-int4",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 21.625,
+      "dim": 1024,
+      "norm": 0.999785,
+      "prompt_tokens": 5,
+      "error": null
+    },
+    {
+      "model": "qwen3-embedding-0.6b-int8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 7.547,
+      "dim": 1024,
+      "norm": 1.000161,
+      "prompt_tokens": 5,
+      "error": null
+    },
+    {
+      "model": "bge-m3-i8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 20.719,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "bge-m3",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 0.609,
+      "dim": 1024,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "arctic-embed-m-v2-int8",
+      "kind": "embedding",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 10.11,
+      "dim": 768,
+      "norm": 1.0,
+      "prompt_tokens": 8,
+      "error": null
+    },
+    {
+      "model": "qwen-reranker",
+      "kind": "rerank",
+      "required": true,
+      "status": "PASS",
+      "http": 200,
+      "seconds": 47.89,
+      "dim": null,
+      "norm": null,
+      "error": null
+    },
+    {
+      "model": "DINO",
+      "kind": "image_embedding",
+      "required": false,
+      "status": "N/A",
+      "note": "no production OVMS deployment (official DINOv3 blocked on Meta gated weights)"
+    },
+    {
+      "model": "multimodal Classic IR",
+      "kind": "image_embedding",
+      "required": false,
+      "status": "N/A",
+      "note": "export-only track; not present in the production registry"
+    }
+  ],
+  "long_text": [
+    {
+      "target_tokens": 256,
+      "actual_tokens": 252,
+      "single": {
+        "http": 200,
+        "seconds": 1.047,
+        "dim": 1024,
+        "norm": 0.999913,
+        "prompt_tokens": 252,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.078,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 1.062,
+          "dim": 1024,
+          "norm": 0.999913,
+          "prompt_tokens": 252,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 1.046,
+          "dim": 1024,
+          "norm": 0.999913,
+          "prompt_tokens": 252,
+          "error": null
+        }
+      ],
+      "wall_seconds": 1.062,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.079,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 512,
+      "actual_tokens": 512,
+      "single": {
+        "http": 200,
+        "seconds": 0.906,
+        "dim": 1024,
+        "norm": 1.000188,
+        "prompt_tokens": 512,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.063,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 0.906,
+          "dim": 1024,
+          "norm": 1.000188,
+          "prompt_tokens": 512,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 1.797,
+          "dim": 1024,
+          "norm": 1.000188,
+          "prompt_tokens": 512,
+          "error": null
+        }
+      ],
+      "wall_seconds": 1.812,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.063,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 1024,
+      "actual_tokens": 1022,
+      "single": {
+        "http": 200,
+        "seconds": 2.187,
+        "dim": 1024,
+        "norm": 1.000035,
+        "prompt_tokens": 1022,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.078,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 2.203,
+          "dim": 1024,
+          "norm": 1.000035,
+          "prompt_tokens": 1022,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 4.375,
+          "dim": 1024,
+          "norm": 1.000035,
+          "prompt_tokens": 1022,
+          "error": null
+        }
+      ],
+      "wall_seconds": 4.375,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.062,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    },
+    {
+      "target_tokens": 4591,
+      "actual_tokens": 4592,
+      "single": {
+        "http": 200,
+        "seconds": 10.609,
+        "dim": 1024,
+        "norm": 1.0,
+        "prompt_tokens": 4592,
+        "error": null
+      },
+      "single_liveness": {
+        "http": 200,
+        "seconds": 0.063,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      },
+      "concurrency": 2,
+      "concurrent": [
+        {
+          "http": 200,
+          "seconds": 21.141,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 4592,
+          "error": null
+        },
+        {
+          "http": 200,
+          "seconds": 19.016,
+          "dim": 1024,
+          "norm": 1.0,
+          "prompt_tokens": 4592,
+          "error": null
+        }
+      ],
+      "wall_seconds": 21.141,
+      "concurrent_liveness": {
+        "http": 200,
+        "seconds": 0.078,
+        "dim": 1024,
+        "norm": 1.000302,
+        "prompt_tokens": 4,
+        "error": null
+      }
+    }
+  ],
+  "reranker": {
+    "http": 200,
+    "seconds": 35.218,
+    "scores": {
+      "Biology is the study of living organisms.": 0.9933588873579225,
+      "The Eiffel Tower is in Paris.": 3.021244067895014e-05
+    },
+    "ordering_ok": true,
+    "range_ok": true,
+    "error": null,
+    "biology_score": 0.9933588873579225,
+    "eiffel_score": 3.021244067895014e-05
+  },
+  "counters": {
+    "http_5xx": 0,
+    "exceptions": 0
+  },
+  "exception_log": [],
+  "retry_log": [],
+  "gates": {
+    "Compatibility": "PASS",
+    "Correctness": "PASS",
+    "Long-text liveness": "PASS",
+    "Concurrency": "PASS",
+    "Reranker": "PASS",
+    "Zero-resident": "N/A",
+    "Failure counters": "PASS"
+  }
+}

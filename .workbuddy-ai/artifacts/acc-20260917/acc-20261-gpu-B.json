@@ -1,0 +1,62 @@
+{
+  "label": "ovms-2026.1-tfs-gpu",
+  "protocol": "tfs",
+  "gateway_base": "http://192.168.22.102:28031",
+  "ovms_base": "http://192.168.22.102:28361",
+  "captured_at": "2026-09-16T19:11:27.844304+00:00",
+  "zero_resident": {
+    "initial_loaded": [],
+    "after_request": [
+      "qwen3-embedding-0.6b-int4-pooled__gpu"
+    ],
+    "unloaded": true,
+    "unload_seconds": 101.203,
+    "error": null
+  },
+  "counters": {
+    "http_5xx": 0,
+    "exceptions": 0
+  },
+  "exception_log": [],
+  "retry_log": [
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28031/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28031/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28031/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28031/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    {
+      "method": "GET",
+      "url": "http://192.168.22.102:28031/v1/broker/metrics",
+      "type": "ConnectionError",
+      "message": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    }
+  ],
+  "gates": {
+    "Compatibility": "N/A",
+    "Correctness": "N/A",
+    "Long-text liveness": "N/A",
+    "Concurrency": "N/A",
+    "Reranker": "N/A",
+    "Zero-resident": "PASS",
+    "Failure counters": "PASS"
+  }
+}

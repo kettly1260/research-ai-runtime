@@ -1,0 +1,46 @@
+# Production cutover image for the Unraid UHD730 host.
+#
+# Why a separate Dockerfile:
+#   * `services/ai-gateway/Dockerfile` is the generic/CI image (python:3.11-slim +
+#     a fresh pip resolve). Building it at cutover time would install whatever
+#     transformers/tokenizers/numpy are current that day, so legacy and modular
+#     would run *different* tokenizer runtimes and vector output could drift.
+#   * This image instead uses a pinned reconstruction of the legacy Python
+#     runtime: Python 3.11.15 plus the complete package versions captured from
+#     `ovms-api-base:20260915` on 2026-09-16.  It then adds only what the modular
+#     package needs on top of that frozen environment.
+#
+# Dependency verification against the production tokenizers:
+#   * base image already provides: fastapi, uvicorn, transformers, tokenizers,
+#     numpy, requests, httpx, pydantic, PyYAML
+#   * `pillow` is MISSING and is an import-time dependency of
+#     `research_ai_gateway.inference.multimodal` (`from PIL import Image`), so
+#     without it the app fails to start. It is installed here.
+#   * `protobuf` and `sentencepiece` are NOT required: every tokenizer directory
+#     the gateway loads ships a fast-tokenizer `tokenizer.json`
+#       - /tokenizers/bge-m3                              -> tokenizer.json
+#       - /tokenizers/qwen-reranker                       -> tokenizer.json
+#       - /models/OpenVINO/Qwen3-Embedding-0.6B-int4-cw-ov -> tokenizer.json
+#       - /models/Snowflake/snowflake-arctic-embed-m-v2.0-test -> tokenizer.json
+#     which is why the running legacy container works today without either.
+#
+# IMPORTANT: production still bind-mounts the legacy `/app` directory for
+# rollback compatibility. Modular source is therefore baked under `/opt`, not
+# `/app`, so the running code is immutable and tied to the GHCR image digest.
+
+ARG CUTOVER_BASE_IMAGE=ghcr.io/kettly1260/research-ai-runtime-gateway-base:20260915
+FROM ${CUTOVER_BASE_IMAGE}
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir "pillow>=10.0"
+
+COPY services/ai-gateway/research_ai_gateway /opt/research-ai-gateway/research_ai_gateway
+COPY config/models.yaml /opt/research-ai-gateway/config/models.yaml
+
+ENV PYTHONPATH=/opt/research-ai-gateway
+ENV MODELS_CONFIG_PATH=/opt/research-ai-gateway/config/models.yaml
+
+EXPOSE 8000
+
+CMD ["uvicorn", "research_ai_gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -179,6 +179,8 @@ jobs:
           tags: |
             type=raw,value=cutover-${{ github.sha }}
             type=raw,value=cutover-latest,enable=${{ github.ref == 'refs/heads/cutover-modular-ai-gateway' }}
+            type=raw,value=production-${{ github.sha }},enable=${{ github.ref == 'refs/heads/cutover-modular-ai-gateway' }}
+            type=raw,value=production-latest,enable=${{ github.ref == 'refs/heads/cutover-modular-ai-gateway' }}
 
       - name: Build and push qualified cutover gateway
         uses: docker/build-push-action@v5

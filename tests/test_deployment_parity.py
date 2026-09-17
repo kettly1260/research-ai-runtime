@@ -179,13 +179,17 @@ def test_cutover_branch_runs_ci_and_builds_a_sha_pinned_ghcr_candidate():
     assert "cutover-modular-ai-gateway" in docker
     assert "workflow_dispatch" in docker
     assert "build-gateway-cutover-base" in docker
+    assert "gateway-release-test:" in docker
     assert "build-gateway-cutover" in docker
-    assert "needs: build-gateway-cutover-base" in docker
+    assert "needs: [build-gateway-cutover-base, gateway-release-test]" in docker
+    assert "Run release regression tests" in docker
     assert "services/ai-gateway/Dockerfile.cutover-base" in docker
     assert "research-ai-runtime-gateway-base" in docker
     assert "services/ai-gateway/Dockerfile.cutover" in docker
     assert "CUTOVER_BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_GATEWAY_BASE }}:20260915" in docker
     assert "type=raw,value=cutover-${{ github.sha }}" in docker
+    assert "type=raw,value=production-${{ github.sha }}" in docker
+    assert "type=raw,value=production-latest" in docker
     assert "cutover-modular-ai-gateway" in tests
 
 

@@ -72,12 +72,6 @@ services:
       - AI_GATEWAY_ENDPOINT=${AI_GATEWAY_ENDPOINT:-http://ai-gateway:8000}
       - PARSER_CONFIG_PATH=/config/providers.yaml
       - MEDIA_DATA_DIR=/data/media.lance
-      - MINERU_API_KEY=${MINERU_API_KEY:-}
-      - MINERU_ENDPOINT=${MINERU_ENDPOINT:-}
-      - PADDLEOCR_API_KEY=${PADDLEOCR_API_KEY:-}
-      - PADDLEOCR_ENDPOINT=${PADDLEOCR_ENDPOINT:-}
-      - LOCAL_MINERU_ENDPOINT=${LOCAL_MINERU_ENDPOINT:-}
-      - LOCAL_PADDLE_ENDPOINT=${LOCAL_PADDLE_ENDPOINT:-}
     depends_on:
       - ai-gateway
     networks:

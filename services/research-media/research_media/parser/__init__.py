@@ -6,8 +6,10 @@ from .models import (
     AsyncPollingConfig,
     AuthConfig,
     LifecycleConfig,
+    WorkflowStep,
 )
 from .drivers.http import GenericHttpDriver
+from .drivers.command import GenericCommandDriver
 from .registry import ProviderRegistry, PROVIDER_REGISTRY
 from .manager import ParserManager, PARSER_MANAGER
 from .normalization import normalize_response
@@ -21,7 +23,9 @@ __all__ = [
     "AsyncPollingConfig",
     "AuthConfig",
     "LifecycleConfig",
+    "WorkflowStep",
     "GenericHttpDriver",
+    "GenericCommandDriver",
     "ProviderRegistry",
     "PROVIDER_REGISTRY",
     "ParserManager",

@@ -4,7 +4,16 @@ from typing import Any, Dict, Optional
 
 PARSER_CONFIG_PATH = os.getenv("PARSER_CONFIG_PATH", "config/providers.yaml")
 AI_GATEWAY_ENDPOINT = os.getenv("AI_GATEWAY_ENDPOINT", "http://ai-gateway:8000")
-MEDIA_DATA_DIR = os.getenv("MEDIA_DATA_DIR", "/data/media.lance")
+def _get_default_media_data_dir() -> str:
+    env_val = os.getenv("MEDIA_DATA_DIR")
+    if env_val:
+        return env_val
+    if os.path.exists("/data"):
+        return "/data/media.lance"
+    return os.path.abspath("data/media.lance")
+
+
+MEDIA_DATA_DIR = _get_default_media_data_dir()
 SUPERVISOR_ENDPOINT = os.getenv("SUPERVISOR_ENDPOINT", "http://supervisor:9001")
 
 

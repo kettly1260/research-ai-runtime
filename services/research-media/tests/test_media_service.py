@@ -9,14 +9,11 @@ from fastapi.testclient import TestClient
 import httpx
 
 sys.path.insert(0, os.path.abspath("packages/contracts/src"))
-for mod_name in list(sys.modules.keys()):
-    if mod_name == "app" or mod_name.startswith("app."):
-        del sys.modules[mod_name]
 sys.path.insert(0, os.path.abspath("services/research-media"))
 
-from app.main import app
-from app.parser.drivers.http import GenericHttpDriver
-from app.parser.models import (
+from research_media.main import app
+from research_media.parser.drivers.http import GenericHttpDriver
+from research_media.parser.models import (
     ProviderDefinition,
     RequestTemplate,
     RequestFileConfig,
@@ -25,9 +22,9 @@ from app.parser.models import (
     ResponseMappingConfig,
     LifecycleConfig,
 )
-from app.parser.registry import ProviderRegistry, PROVIDER_REGISTRY
-from app.parser.manager import PARSER_MANAGER
-from app.media.store import LanceMediaStore
+from research_media.parser.registry import ProviderRegistry, PROVIDER_REGISTRY
+from research_media.parser.manager import ParserManager, PARSER_MANAGER
+from research_media.media.store import LanceMediaStore
 from contracts import ParseRequest, ParsedDocument, DocumentFigure, DocumentBlock
 
 
@@ -418,6 +415,225 @@ providers:
     asyncio.run(_run())
 
 
+def test_parser_config_fail_fast_missing_file():
+    """Verify that when PARSER_CONFIG_PATH points to a non-existent file, registry raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError):
+        ProviderRegistry(config_path="/non/existent/path/providers_missing.yaml")
+
+
+def test_parser_config_fail_fast_invalid_yaml(tmp_path):
+    """Verify that invalid YAML syntax triggers fail-fast."""
+    bad_yaml = tmp_path / "bad.yaml"
+    bad_yaml.write_text("providers:\n  broken: [this is unclosed", encoding="utf-8")
+    with pytest.raises(RuntimeError):
+        ProviderRegistry(config_path=str(bad_yaml))
+
+
+def test_parser_config_fail_fast_empty_providers(tmp_path):
+    """Verify that 0 providers in user-specified config triggers fail-fast ValueError."""
+    empty_yaml = tmp_path / "empty.yaml"
+    empty_yaml.write_text("providers: {}\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        ProviderRegistry(config_path=str(empty_yaml))
+
+
+def test_declarative_workflow_driver_file_upload_flow(tmp_path):
+    """Test multi-step HTTP workflow driver:
+    Step 1: POST to /file-urls/batch -> extracts upload_url & batch_id
+    Step 2: PUT raw binary file to ${upload_url}
+    Step 3: Poll /extract-results/batch/${batch_id} -> done
+    Step 4: Normalize response
+    """
+    dummy_file = tmp_path / "paper.pdf"
+    dummy_file.write_bytes(b"%PDF-1.5 test content")
+
+    yaml_content = f"""
+providers:
+  workflow_mineru:
+    driver: http
+    location: remote
+    endpoint: https://mineru.net/api/v4
+    enabled: true
+    priority: 100
+    auth:
+      type: bearer
+      token: test-token-123
+    workflow:
+      - name: apply_upload_url
+        type: http
+        condition: "file_path != null"
+        method: POST
+        path: /file-urls/batch
+        encoding: json
+        body:
+          files:
+            - name: "${{filename}}"
+              data_id: "${{document_id}}"
+        exports:
+          batch_id: "data.batch_id"
+          upload_url: "data.file_urls[0]"
+      - name: upload_binary
+        type: http
+        condition: "file_path != null"
+        method: PUT
+        url: "${{upload_url}}"
+        encoding: binary_file
+      - name: poll_result
+        type: poll
+        method: GET
+        path: "/extract-results/batch/${{batch_id}}"
+        status_path: "data.extract_result[0].state"
+        success_values: ["done"]
+        poll_interval_seconds: 0.01
+        max_poll_seconds: 5.0
+        exports:
+          full_zip_url: "data.extract_result[0].full_zip_url"
+          extract_result: "data.extract_result[0]"
+    response:
+      markdown_path: "extract_result.markdown || full_zip_url"
+"""
+    cfg_file = tmp_path / "workflow_providers.yaml"
+    cfg_file.write_text(yaml_content, encoding="utf-8")
+
+    registry = ProviderRegistry(config_path=str(cfg_file))
+    driver = registry.get_driver("workflow_mineru")
+    assert driver is not None
+
+    apply_resp = httpx.Response(200, json={
+        "code": 0,
+        "data": {
+            "batch_id": "batch-abc-123",
+            "file_urls": ["https://oss.mineru.net/upload/batch-abc-123/paper.pdf"]
+        }
+    }, request=httpx.Request("POST", "https://mineru.net/api/v4/file-urls/batch"))
+
+    upload_resp = httpx.Response(200, text="OK", request=httpx.Request("PUT", "https://oss.mineru.net/upload/batch-abc-123/paper.pdf"))
+
+    poll_resp = httpx.Response(200, json={
+        "code": 0,
+        "data": {
+            "batch_id": "batch-abc-123",
+            "extract_result": [{
+                "state": "done",
+                "full_zip_url": "https://cdn.mineru.net/results/batch-abc-123.zip",
+                "markdown": "# Extracted Paper Content via Multi-step Workflow"
+            }]
+        }
+    }, request=httpx.Request("GET", "https://mineru.net/api/v4/extract-results/batch/batch-abc-123"))
+
+    async def _run():
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = [apply_resp, upload_resp, poll_resp]
+
+            req = ParseRequest(file_path=str(dummy_file))
+            doc = await driver.parse(req)
+
+            assert doc.markdown == "# Extracted Paper Content via Multi-step Workflow"
+            assert mock_req.call_count == 3
+            # Check step 2 PUT call uploaded raw binary content
+            put_call = mock_req.call_args_list[1]
+            assert put_call.args[0] == "PUT"
+            assert put_call.args[1] == "https://oss.mineru.net/upload/batch-abc-123/paper.pdf"
+            assert put_call.kwargs.get("content") == b"%PDF-1.5 test content"
+
+    asyncio.run(_run())
+
+
+def test_declarative_workflow_driver_url_flow(tmp_path):
+    """Test workflow driver in URL extract mode: branches to URL submission step."""
+    yaml_content = """
+providers:
+  workflow_mineru_url:
+    driver: http
+    location: remote
+    endpoint: https://mineru.net/api/v4
+    enabled: true
+    priority: 100
+    workflow:
+      - name: apply_upload_url
+        type: http
+        condition: "file_path != null"
+        method: POST
+        path: /file-urls/batch
+      - name: submit_url
+        type: http
+        condition: "file_url != null && file_path == null"
+        method: POST
+        path: /extract/task/batch
+        encoding: json
+        body:
+          files:
+            - url: "${file_url}"
+        exports:
+          batch_id: "data.batch_id"
+      - name: poll_result
+        type: poll
+        method: GET
+        path: "/extract-results/batch/${batch_id}"
+        status_path: "data.status"
+        success_values: ["done"]
+        poll_interval_seconds: 0.01
+        exports:
+          result_md: "data.markdown"
+    response:
+      markdown_path: "result_md"
+"""
+    cfg_file = tmp_path / "url_providers.yaml"
+    cfg_file.write_text(yaml_content, encoding="utf-8")
+
+    registry = ProviderRegistry(config_path=str(cfg_file))
+    driver = registry.get_driver("workflow_mineru_url")
+
+    submit_resp = httpx.Response(200, json={
+        "data": {"batch_id": "batch-url-999"}
+    }, request=httpx.Request("POST", "https://mineru.net/api/v4/extract/task/batch"))
+
+    poll_resp = httpx.Response(200, json={
+        "data": {"status": "done", "markdown": "# URL Mode Extracted Document"}
+    }, request=httpx.Request("GET", "https://mineru.net/api/v4/extract-results/batch/batch-url-999"))
+
+    async def _run():
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = [submit_resp, poll_resp]
+
+            req = ParseRequest(file_url="https://arxiv.org/pdf/2401.00001.pdf")
+            doc = await driver.parse(req)
+
+            assert doc.markdown == "# URL Mode Extracted Document"
+            assert mock_req.call_count == 2
+
+    asyncio.run(_run())
+
+
+def test_generic_command_driver(tmp_path):
+    """Test GenericCommandDriver executing external command protocol."""
+    from research_media.parser.drivers.command import GenericCommandDriver
+    from research_media.parser.models import ProviderDefinition, ResponseMappingConfig
+
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("sample content", encoding="utf-8")
+
+    definition = ProviderDefinition(
+        name="test_cmd_driver",
+        driver="command",
+        command=sys.executable,
+        args=["-c", "import sys, json; print(json.dumps({'text': 'extracted OCR text from ' + sys.argv[1]}))", "${file_path}"],
+        output_format="json",
+        response=ResponseMappingConfig(markdown_path="text"),
+    )
+
+    driver = GenericCommandDriver(definition)
+    assert driver.is_available()
+
+    async def _run():
+        req = ParseRequest(file_path=str(test_file))
+        doc = await driver.parse(req)
+        assert "extracted OCR text from" in doc.markdown
+        assert str(test_file) in doc.markdown
+
+    asyncio.run(_run())
+
+
 # ==============================================================================
 # General Media Service & LanceDB Tests
 # ==============================================================================
@@ -426,9 +642,10 @@ def test_list_providers(client):
     assert res.status_code == 200
     data = res.json()
     assert "providers" in data
-    # Providers from config/providers.example.yaml
+    # Providers from the current unified config/providers.example.yaml
     names = [p["name"] for p in data["providers"]]
-    assert "mineru_cloud" in names
+    assert "mineru" in names
+    assert "paddleocr" in names
 
 
 def test_privacy_routing():
@@ -444,6 +661,96 @@ def test_capability_routing():
     candidates = PARSER_MANAGER.select_candidates(req)
     cand_names = [c.name for c in candidates]
     assert "generic_local_ocr" not in cand_names
+
+
+def test_parser_manager_primary_success_returns_immediately():
+    """Verify that when the first (primary) provider succeeds:
+    - ProviderExecutionInfo.status is 'success' (matching frozen contracts)
+    - Returns immediately
+    - Does NOT invoke the fallback provider
+    """
+    async def _test():
+        mock_driver1 = MagicMock()
+        mock_driver1.name = "primary_prov"
+        mock_driver1.is_available.return_value = True
+        mock_driver1.satisfies_capabilities.return_value = True
+        mock_driver1.definition.location = "remote"
+        mock_driver1.definition.priority = 100
+        mock_driver1.definition.lifecycle = LifecycleConfig()
+        mock_driver1.parse = AsyncMock(return_value=ParsedDocument(
+            document_id="doc-1",
+            markdown="primary parsed content",
+        ))
+
+        mock_driver2 = MagicMock()
+        mock_driver2.name = "fallback_prov"
+        mock_driver2.is_available.return_value = True
+        mock_driver2.satisfies_capabilities.return_value = True
+        mock_driver2.definition.location = "remote"
+        mock_driver2.definition.priority = 50
+        mock_driver2.definition.lifecycle = LifecycleConfig()
+        mock_driver2.parse = AsyncMock()
+
+        mock_reg = MagicMock()
+        mock_reg.list_drivers.return_value = [mock_driver1, mock_driver2]
+
+        pm = ParserManager(registry=mock_reg)
+        req = ParseRequest(privacy="public", needs=["pdf"])
+        doc = await pm.parse(req)
+
+        assert doc.markdown == "primary parsed content"
+        assert doc.provider_info is not None
+        assert doc.provider_info.provider_name == "primary_prov"
+        assert doc.provider_info.status == "success"
+        assert doc.provider_info.fallback_reason is None
+        assert doc.provider_info.attempted_providers == ["primary_prov"]
+        mock_driver2.parse.assert_not_called()
+
+    asyncio.run(_test())
+
+
+def test_parser_manager_fallback_on_first_failure():
+    """Verify that when primary provider fails, it gracefully falls back to the second:
+    - Status is 'fallback'
+    - attempted_providers includes both
+    - fallback_reason contains the first error
+    """
+    async def _test():
+        mock_driver1 = MagicMock()
+        mock_driver1.name = "primary_prov"
+        mock_driver1.is_available.return_value = True
+        mock_driver1.satisfies_capabilities.return_value = True
+        mock_driver1.definition.location = "remote"
+        mock_driver1.definition.priority = 100
+        mock_driver1.definition.lifecycle = LifecycleConfig()
+        mock_driver1.parse = AsyncMock(side_effect=RuntimeError("Connection refused by upstream"))
+
+        mock_driver2 = MagicMock()
+        mock_driver2.name = "fallback_prov"
+        mock_driver2.is_available.return_value = True
+        mock_driver2.satisfies_capabilities.return_value = True
+        mock_driver2.definition.location = "remote"
+        mock_driver2.definition.priority = 50
+        mock_driver2.definition.lifecycle = LifecycleConfig()
+        mock_driver2.parse = AsyncMock(return_value=ParsedDocument(
+            document_id="doc-2",
+            markdown="fallback parsed content",
+        ))
+
+        mock_reg = MagicMock()
+        mock_reg.list_drivers.return_value = [mock_driver1, mock_driver2]
+
+        pm = ParserManager(registry=mock_reg)
+        req = ParseRequest(privacy="public", needs=["pdf"])
+        doc = await pm.parse(req)
+
+        assert doc.markdown == "fallback parsed content"
+        assert doc.provider_info.provider_name == "fallback_prov"
+        assert doc.provider_info.status == "fallback"
+        assert "Connection refused" in (doc.provider_info.fallback_reason or "")
+        assert doc.provider_info.attempted_providers == ["primary_prov", "fallback_prov"]
+
+    asyncio.run(_test())
 
 
 def test_media_ingest_and_search(tmp_path, client):
@@ -465,13 +772,13 @@ def test_media_ingest_and_search(tmp_path, client):
         tables=[],
     )
 
-    from app.media import MEDIA_INGESTOR, MEDIA_SEARCH
+    from research_media.media import MEDIA_INGESTOR, MEDIA_SEARCH
 
     with patch.object(MEDIA_INGESTOR, "store", temp_store), \
          patch.object(MEDIA_SEARCH, "store", temp_store):
 
-        with patch("app.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
-             patch("app.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb:
+        with patch("research_media.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
+             patch("research_media.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb:
 
             mock_img_emb.return_value = [[0.1] * 512]
             mock_dino_emb.return_value = [[0.2] * 384]
@@ -493,7 +800,7 @@ def test_media_ingest_and_search(tmp_path, client):
             assert res2.json()["skipped_duplicates"] == 1
 
         # Search Text to Image
-        with patch("app.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
+        with patch("research_media.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
             mock_txt_emb.return_value = [[0.1] * 512]
             search_payload = {
                 "mode": "text_to_image",
@@ -508,7 +815,7 @@ def test_media_ingest_and_search(tmp_path, client):
             assert s_data["results"][0]["caption"] == "Figure 1: XRD spectrum"
 
         # Search Image to Image (DINO)
-        with patch("app.media.search.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_search:
+        with patch("research_media.media.search.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_search:
             mock_dino_search.return_value = [[0.2] * 384]
             search_img_payload = {
                 "mode": "image_to_image",
@@ -520,3 +827,388 @@ def test_media_ingest_and_search(tmp_path, client):
             d_data = res_dino.json()
             assert d_data["mode"] == "image_to_image"
             assert d_data["count"] == 1
+
+
+def test_disabled_provider_never_available():
+    """Verify enabled: false is strictly respected across all lifecycle modes."""
+    from research_media.parser.models import ProviderDefinition, LifecycleConfig
+    from research_media.parser.drivers.http import GenericHttpDriver
+
+    # 1. on_demand with enabled: false
+    def_on_demand = ProviderDefinition(
+        name="test_on_demand_disabled",
+        type="generic_http",
+        enabled=False,
+        lifecycle=LifecycleConfig(mode="on_demand", resource="some_res")
+    )
+    driver_on_demand = GenericHttpDriver(def_on_demand)
+    assert driver_on_demand.is_available() is False
+
+    # 2. model_on_demand with enabled: false
+    def_model_on_demand = ProviderDefinition(
+        name="test_model_disabled",
+        type="generic_http",
+        enabled=False,
+        lifecycle=LifecycleConfig(mode="model_on_demand", resource="some_model")
+    )
+    driver_model_on_demand = GenericHttpDriver(def_model_on_demand)
+    assert driver_model_on_demand.is_available() is False
+
+
+def test_generic_http_zip_unpack():
+    """Verify GenericHttpDriver downloads and unpacks MinerU full_zip_url to ParsedDocument."""
+    import zipfile
+    import io
+    import json
+    from research_media.parser.models import ProviderDefinition, ResponseMappingConfig
+    from research_media.parser.drivers.http import GenericHttpDriver
+
+    # Create MinerU official result ZIP using exact official schema:
+    # 'image_caption': ["Fig. 1 ..."] (list[str])
+    # 'table_caption': ["Table 1 ..."] (list[str])
+    # 'table_body': "<html>...</html>"
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf:
+        zf.writestr("full.md", "# Superconducting Analysis\n\nHigh-temperature sample results.")
+        content_list = [
+            {"type": "text", "text": "Superconducting Analysis", "page_idx": 1},
+            {"type": "image", "image_caption": ["Figure 1: Critical field in high-Tc cuprates"], "page_idx": 1, "img_path": "images/fig1.png"},
+            {"type": "table", "table_caption": ["Table 1: Transition temperatures and pressure"], "table_body": "<html><tr><td>T</td><td>K</td></tr></html>", "page_idx": 2},
+        ]
+        zf.writestr("content_list.json", json.dumps(content_list))
+        zf.writestr("images/fig1.png", b"\x89PNG\r\n\x1a\nfakeimage")
+
+    fake_zip_bytes = zip_buf.getvalue()
+
+    p_def = ProviderDefinition(
+        name="test_mineru_zip",
+        type="generic_http",
+        enabled=True,
+        endpoint="https://mock.mineru.net",
+        response=ResponseMappingConfig(
+            markdown_path="markdown",
+            pages_path="pages",
+            figures_path="figures",
+            tables_path="tables",
+        )
+    )
+    driver = GenericHttpDriver(p_def)
+
+    class MockZipResponse:
+        status_code = 200
+
+        async def aiter_bytes(self, chunk_size=65536):
+            yield fake_zip_bytes
+
+    class MockClient:
+        def stream(self, method, url, timeout=None):
+            from contextlib import asynccontextmanager
+            @asynccontextmanager
+            async def _stream():
+                yield MockZipResponse()
+            return _stream()
+
+    async def _run():
+        extracted = await driver._unpack_zip_archive(MockClient(), "https://mock.mineru.net/download/result.zip")
+        assert "Superconducting Analysis" in extracted["markdown"]
+        assert len(extracted["pages"]) >= 1
+        assert len(extracted["figures"]) == 1
+        # Check that list[str] was cleanly converted to a validated string
+        assert isinstance(extracted["figures"][0]["caption"], str)
+        assert extracted["figures"][0]["caption"] == "Figure 1: Critical field in high-Tc cuprates"
+        assert len(extracted["tables"]) == 1
+        assert isinstance(extracted["tables"][0]["caption"], str)
+        assert extracted["tables"][0]["caption"] == "Table 1: Transition temperatures and pressure"
+
+        # Verify that normalize_response builds a valid ParsedDocument without Pydantic ValidationError
+        from research_media.parser.normalization import normalize_response
+        doc = normalize_response(extracted, p_def.response)
+        assert doc.markdown == "# Superconducting Analysis\n\nHigh-temperature sample results."
+        assert len(doc.figures) == 1
+        assert doc.figures[0].caption == "Figure 1: Critical field in high-Tc cuprates"
+        assert len(doc.tables) == 1
+        assert doc.tables[0].caption == "Table 1: Transition temperatures and pressure"
+
+    asyncio.run(_run())
+
+
+def test_generic_http_zip_unpack_rejects_malformed_content_list():
+    """Malformed MinerU content_list.json must fail instead of silently dropping figures/tables."""
+    import io
+    import zipfile
+    from research_media.parser.models import ProviderDefinition
+    from research_media.parser.drivers.http import GenericHttpDriver
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w") as zf:
+        zf.writestr("full.md", "# Valid markdown")
+        zf.writestr("content_list.json", "{not-valid-json")
+    fake_zip_bytes = zip_buf.getvalue()
+
+    driver = GenericHttpDriver(
+        ProviderDefinition(
+            name="test_mineru_bad_zip",
+            type="generic_http",
+            enabled=True,
+            endpoint="https://mock.mineru.net",
+        )
+    )
+
+    class MockZipResponse:
+        status_code = 200
+
+        async def aiter_bytes(self, chunk_size=65536):
+            yield fake_zip_bytes
+
+    class MockClient:
+        def stream(self, method, url, timeout=None):
+            from contextlib import asynccontextmanager
+
+            @asynccontextmanager
+            async def _stream():
+                yield MockZipResponse()
+
+            return _stream()
+
+    async def _run():
+        with pytest.raises(ValueError, match="Malformed content_list.json"):
+            await driver._unpack_zip_archive(
+                MockClient(), "https://mock.mineru.net/download/result.zip"
+            )
+
+    asyncio.run(_run())
+
+
+def test_command_driver_timeout():
+    """Verify GenericCommandDriver strictly enforces process execution timeout."""
+    import sys
+    from research_media.parser.models import ProviderDefinition
+    from research_media.parser.drivers.command import GenericCommandDriver
+    from contracts import ParseRequest
+
+    # Create a command driver that sleeps longer than timeout
+    p_def = ProviderDefinition(
+        name="hanging_command",
+        type="command",
+        enabled=True,
+        command=sys.executable,
+        args=["-c", "import time; time.sleep(5)"],
+        timeout=0.5,
+    )
+    driver = GenericCommandDriver(p_def)
+    req = ParseRequest(file_content_base64="aGVsbG8=", mime_type="application/pdf")
+
+    async def _run():
+        with pytest.raises(TimeoutError) as exc_info:
+            await driver.parse(req)
+        assert "timed out after 0.5s" in str(exc_info.value)
+
+    asyncio.run(_run())
+
+
+def test_provider_registry_hot_reload_is_atomic(tmp_path):
+    cfg = tmp_path / "providers.yaml"
+    cfg.write_text(
+        "providers:\n  parser_a:\n    driver: http\n    location: remote\n"
+        "    endpoint: https://parser.example\n    model: model-v1\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    registry = ProviderRegistry(config_path=str(cfg))
+    assert registry.get_driver("parser_a").definition.model == "model-v1"
+
+    cfg.write_text(
+        "providers:\n  parser_a:\n    driver: http\n    location: remote\n"
+        "    endpoint: https://parser.example\n    model: model-v2-longer\n"
+        "    api_mode: precision\n    options: {language: ch}\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    driver = registry.get_driver("parser_a")
+    assert driver.definition.model == "model-v2-longer"
+    assert driver.definition.options["language"] == "ch"
+    assert registry.last_reload_error is None
+
+    cfg.write_text("providers:\n  broken: [", encoding="utf-8")
+    stale = registry.get_driver("parser_a")
+    assert stale is not None
+    assert stale.definition.model == "model-v2-longer"
+    assert registry.last_reload_error
+
+    cfg.write_text(
+        "providers:\n  parser_a:\n    driver: http\n    location: remote\n"
+        "    endpoint: https://parser.example\n    model: model-v3-even-longer\n    enabled: true\n",
+        encoding="utf-8",
+    )
+    assert registry.get_driver("parser_a").definition.model == "model-v3-even-longer"
+    assert registry.last_reload_error is None
+
+
+def test_workflow_model_options_and_presigned_auth_boundary(tmp_path):
+    dummy_file = tmp_path / "paper.pdf"
+    dummy_file.write_bytes(b"%PDF test")
+    definition = ProviderDefinition(
+        name="generic_precision",
+        driver="http",
+        location="remote",
+        endpoint="https://parser.example",
+        model="vlm",
+        api_mode="precision",
+        options={"language": "ch", "enable_table": True},
+        auth=AuthConfig(type="bearer", token="top-secret"),
+        workflow=[
+            {
+                "name": "apply",
+                "type": "http",
+                "method": "POST",
+                "path": "/apply",
+                "body": {
+                    "model": "${model}",
+                    "language": "${options.language}",
+                    "enable_table": "${options.enable_table}",
+                },
+                "exports": {"upload_url": "data.url"},
+            },
+            {
+                "name": "upload",
+                "type": "http",
+                "method": "PUT",
+                "url": "${upload_url}",
+                "encoding": "binary_file",
+                "use_auth": False,
+                "response_format": "text",
+            },
+        ],
+        response=ResponseMappingConfig(markdown_path="text"),
+    )
+    driver = GenericHttpDriver(definition)
+    apply_resp = httpx.Response(
+        200,
+        json={"data": {"url": "https://storage.example/presigned"}},
+        request=httpx.Request("POST", "https://parser.example/apply"),
+    )
+    upload_resp = httpx.Response(
+        200,
+        text="uploaded",
+        request=httpx.Request("PUT", "https://storage.example/presigned"),
+    )
+
+    async def _run():
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = [apply_resp, upload_resp]
+            doc = await driver.parse(ParseRequest(file_path=str(dummy_file)))
+            assert doc.markdown == "uploaded"
+            submit_call = mock_req.call_args_list[0]
+            assert submit_call.kwargs["json"] == {
+                "model": "vlm",
+                "language": "ch",
+                "enable_table": True,
+            }
+            assert submit_call.kwargs["headers"]["Authorization"] == "Bearer top-secret"
+            upload_call = mock_req.call_args_list[1]
+            assert "Authorization" not in upload_call.kwargs["headers"]
+            assert upload_call.kwargs["content"] == b"%PDF test"
+
+    asyncio.run(_run())
+
+
+def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
+    definition = ProviderDefinition(
+        name="paddle_style",
+        driver="http",
+        location="remote",
+        endpoint="https://paddle.example",
+        model="PP-StructureV3",
+        options={"useDocUnwarping": False},
+        auth=AuthConfig(type="bearer", token="paddle-secret"),
+        workflow=[
+            {
+                "name": "submit",
+                "type": "http",
+                "method": "POST",
+                "path": "/jobs",
+                "encoding": "json",
+                "body": {
+                    "fileUrl": "${file_url}",
+                    "model": "${model}",
+                    "optionalPayload": "${options}",
+                },
+                "exports": {"job_id": "data.jobId"},
+            },
+            {
+                "name": "poll",
+                "type": "poll",
+                "method": "GET",
+                "path": "/jobs/${job_id}",
+                "status_path": "data.state",
+                "success_values": ["done"],
+                "exports": {
+                    "markdown_url": "data.resultUrl.markdownUrl",
+                    "jsonl_url": "data.resultUrl.jsonUrl",
+                },
+                "poll_interval_seconds": 0.01,
+            },
+            {
+                "name": "markdown",
+                "type": "http",
+                "method": "GET",
+                "url": "${markdown_url}",
+                "use_auth": False,
+                "response_format": "text",
+                "exports": {"markdown": "text"},
+            },
+            {
+                "name": "jsonl",
+                "type": "http",
+                "method": "GET",
+                "url": "${jsonl_url}",
+                "use_auth": False,
+                "response_format": "jsonl",
+            },
+        ],
+        response=ResponseMappingConfig(markdown_path="markdown"),
+    )
+    driver = GenericHttpDriver(definition)
+    responses = [
+        httpx.Response(
+            200,
+            json={"data": {"jobId": "job-1"}},
+            request=httpx.Request("POST", "https://paddle.example/jobs"),
+        ),
+        httpx.Response(
+            200,
+            json={
+                "data": {
+                    "state": "done",
+                    "resultUrl": {
+                        "markdownUrl": "https://bos.example/result.md",
+                        "jsonUrl": "https://bos.example/result.jsonl",
+                    },
+                }
+            },
+            request=httpx.Request("GET", "https://paddle.example/jobs/job-1"),
+        ),
+        httpx.Response(
+            200,
+            text="# Parsed by Paddle",
+            request=httpx.Request("GET", "https://bos.example/result.md"),
+        ),
+        httpx.Response(
+            200,
+            text='{"result":{"page":1}}\n{"result":{"page":2}}\n',
+            request=httpx.Request("GET", "https://bos.example/result.jsonl"),
+        ),
+    ]
+
+    async def _run():
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.side_effect = responses
+            doc = await driver.parse(ParseRequest(file_url="https://example.org/paper.pdf"))
+            assert doc.markdown == "# Parsed by Paddle"
+            assert len(doc.raw_provider_result["jsonl"]) == 2
+            assert mock_req.call_args_list[0].kwargs["json"]["model"] == "PP-StructureV3"
+            assert mock_req.call_args_list[0].kwargs["json"]["optionalPayload"] == {
+                "useDocUnwarping": False
+            }
+            assert "Authorization" not in mock_req.call_args_list[2].kwargs["headers"]
+            assert "Authorization" not in mock_req.call_args_list[3].kwargs["headers"]
+
+    asyncio.run(_run())

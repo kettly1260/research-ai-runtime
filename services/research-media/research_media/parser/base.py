@@ -20,7 +20,7 @@ class BaseParserDriver(ABC):
         return self.definition
 
     def is_available(self) -> bool:
-        if not self.definition.enabled and self.definition.lifecycle.mode not in ("on_demand", "model_on_demand"):
+        if not self.definition.enabled:
             return False
         if self.status.quota_state == "exhausted":
             return False

@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
 
@@ -8,28 +9,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
-RUN pip install --no-cache-dir \
-    fastapi \
-    uvicorn \
-    httpx \
-    requests \
-    pyyaml \
-    pillow \
-    lancedb \
-    pyarrow
-
-# Copy contracts and install
+# Install contracts
 COPY packages/contracts /packages/contracts
-RUN pip install --no-cache-dir -e /packages/contracts
+RUN pip install --no-cache-dir /packages/contracts
 
-# Copy service code
-COPY services/research-media/app /app/app
-COPY services/research-media/app/main.py /app/main.py
+# Install service dependencies from pyproject.toml (includes jmespath, lancedb, pyarrow, etc.)
+COPY services/research-media/pyproject.toml /app/pyproject.toml
+COPY services/research-media/README.md /app/README.md
+COPY services/research-media/research_media /app/research_media
+RUN pip install --no-cache-dir /app
 
 # Data directory for LanceDB
 RUN mkdir -p /data/media.lance
 
 EXPOSE 8002
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]
+CMD ["uvicorn", "research_media.main:app", "--host", "0.0.0.0", "--port", "8002"]

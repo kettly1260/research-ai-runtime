@@ -93,6 +93,35 @@ class LifecycleConfig(BaseModel):
     mode: Literal["external", "persistent", "on_demand", "model_on_demand"] = "external"
     resource: Optional[str] = None
     startup_timeout_seconds: float = 60.0
+    idle_timeout_seconds: Optional[float] = None
+
+
+class WorkflowStep(BaseModel):
+    """Declarative workflow step within GenericHttpDriver."""
+    name: str
+    type: Literal["http", "request", "poll", "extract"] = "http"
+    condition: Optional[str] = None
+    method: Literal["GET", "POST", "PUT", "DELETE"] = "POST"
+    url: Optional[str] = None
+    path: Optional[str] = None
+    encoding: Literal["json", "multipart", "binary_file", "raw_file", "urlencoded"] = "json"
+    headers: Dict[str, str] = Field(default_factory=dict)
+    params: Dict[str, str] = Field(default_factory=dict)
+    body: Optional[Any] = None
+    file_field: Optional[str] = None
+    exports: Dict[str, str] = Field(default_factory=dict)
+    use_auth: bool = True
+    response_format: Literal["json", "jsonl", "text", "binary"] = "json"
+    action: Optional[Literal["download_zip", "download_and_extract_zip"]] = None
+
+    # Polling parameters (used when type == "poll")
+    status_path: Optional[str] = None
+    success_values: List[str] = Field(default_factory=lambda: ["done", "success", "completed", "2"])
+    failure_values: List[str] = Field(default_factory=lambda: ["failed", "error", "-1"])
+    poll_interval_seconds: float = 2.0
+    max_poll_seconds: float = 300.0
+
+    model_config = ConfigDict(extra="ignore")
 
 
 class ProviderDefinition(BaseModel):
@@ -105,12 +134,22 @@ class ProviderDefinition(BaseModel):
     enabled: bool = True
     priority: int = 100
     timeout: float = 300.0
+    timeout_seconds: Optional[float] = None
     capabilities: List[str] = Field(default_factory=list)
+    model: Optional[str] = None
+    api_mode: Optional[str] = None
+    options: Dict[str, Any] = Field(default_factory=dict)
     lifecycle: LifecycleConfig = Field(default_factory=LifecycleConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     request: RequestTemplate = Field(default_factory=RequestTemplate)
     async_config: Optional[AsyncPollingConfig] = Field(default=None, alias="async")
+    workflow: Optional[List[WorkflowStep]] = None
     response: ResponseMappingConfig = Field(default_factory=ResponseMappingConfig)
+
+    # Generic command driver protocol fields
+    command: Optional[str] = None
+    args: List[str] = Field(default_factory=list)
+    output_format: Literal["json", "text", "lines"] = "json"
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 

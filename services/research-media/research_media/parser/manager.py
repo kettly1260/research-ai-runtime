@@ -41,8 +41,16 @@ class ParserManager:
 
             candidates.append(driver)
 
-        # Sort by priority descending (higher number = higher priority)
-        candidates.sort(key=lambda d: d.definition.priority, reverse=True)
+        # Sort by configured priority.  A request-level preferred_provider is
+        # treated as an override for the first attempt while preserving the
+        # remaining candidates as fallbacks.
+        candidates.sort(
+            key=lambda d: (
+                1 if request.preferred_provider and d.name == request.preferred_provider else 0,
+                d.definition.priority,
+            ),
+            reverse=True,
+        )
         return candidates
 
     async def parse(self, request: ParseRequest) -> ParsedDocument:
@@ -62,7 +70,9 @@ class ParserManager:
 
             try:
                 # Prepare lifecycle (e.g. spin up on-demand local process via Supervisor)
-                await self.lifecycle.prepare_provider(driver.definition.lifecycle)
+                prepared = await self.lifecycle.prepare_provider(driver.definition.lifecycle)
+                if not prepared:
+                    raise RuntimeError(f"Failed to prepare lifecycle for provider '{driver.name}'")
 
                 # Execute parsing
                 doc = await driver.parse(request)
@@ -73,7 +83,7 @@ class ParserManager:
                 await self.lifecycle.release_provider(driver.definition.lifecycle)
 
                 # Attach execution metadata
-                status_val = "primary" if idx == 0 else "fallback"
+                status_val = "success" if idx == 0 else "fallback"
                 fallback_reason = str(last_error) if idx > 0 else None
 
                 doc.provider_info = ProviderExecutionInfo(

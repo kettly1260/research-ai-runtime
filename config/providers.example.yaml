@@ -1,150 +1,273 @@
-# Research AI Runtime - Declarative Parser Providers Configuration v2.0
-# All providers use the generic HTTP driver - no vendor-specific Python code.
+# Research AI Runtime parser providers
+#
+# Single hot-loaded configuration file for document parsing/OCR providers.
+# Copy this file to providers.yaml, fill API keys/endpoints/models, and edit it
+# in place. research-media reloads a valid changed file without restart.
+#
+# IMPORTANT: providers.yaml may contain plaintext API keys. Keep it out of Git
+# and restrict host permissions. The checked-in example must never contain
+# real credentials.
+#
+# Default routing order is provider.priority (high -> low). ParseRequest can
+# set preferred_provider to override only the first attempt; remaining eligible
+# providers stay available as fallbacks.
 
 providers:
-
-  mineru_cloud:
+  mineru:
     driver: http
     location: remote
-    endpoint: https://mineru.net/api/v4
-    endpoint_env: MINERU_ENDPOINT
+    endpoint: https://mineru.net
     enabled: true
     priority: 100
-    timeout: 300.0
-    capabilities:
-      - pdf
-      - image
-      - ocr
-      - layout
-      - figures
-      - tables
-      - formula
+    timeout_seconds: 900
+
+    # precision: model can be pipeline / vlm / MinerU-HTML.
+    # agent: MinerU fixes the model to its lightweight pipeline; model is ignored.
+    api_mode: precision
+    model: vlm
+    options:
+      language: ch
+      is_ocr: false
+      enable_table: true
+      enable_formula: true
+      extra_formats: []
+      no_cache: false
+      cache_tolerance: 900
+
+    capabilities: [pdf, image, ocr, layout, figures, tables, formula]
     auth:
       type: bearer
-      token_env: MINERU_API_KEY
-    request:
-      method: POST
-      path: /extract/task
-      encoding: multipart
-      file:
-        mode: multipart
-        field: file
-      fields:
-        is_ocr: true
-        enable_formula: true
-        layout_model: doclayout_yolo
-    async:
-      enabled: true
-      job_id_path: data.batch_id || data.task_id
-      poll_path: /extract/task/{job_id}
-      poll_method: GET
-      status_path: data.state || data.status
-      success_values:
-        - done
-        - success
-        - completed
-      failure_values:
-        - failed
-        - error
-      result_path: data
-      poll_interval_seconds: 2.0
-      max_poll_seconds: 300.0
-    response:
-      markdown_path: markdown || text || full_zip_url
-      pages_path: pages
-      blocks_path: layout_blocks || blocks
-      figures_path: figures
-      tables_path: tables
+      token: REPLACE_WITH_MINERU_TOKEN
 
-  paddle_cloud:
+    workflow:
+      - name: precision_apply_upload
+        type: http
+        condition: "api_mode == 'precision' && (file_path != null || file_content_base64 != null)"
+        method: POST
+        path: /api/v4/file-urls/batch
+        encoding: json
+        body:
+          files:
+            - name: "${filename}"
+              data_id: "${document_id}"
+          model_version: "${model}"
+          language: "${options.language}"
+          is_ocr: "${options.is_ocr}"
+          enable_table: "${options.enable_table}"
+          enable_formula: "${options.enable_formula}"
+          extra_formats: "${options.extra_formats}"
+        exports:
+          batch_id: data.batch_id
+          upload_url: data.file_urls[0]
+
+      - name: precision_upload_file
+        type: http
+        condition: "api_mode == 'precision' && upload_url != null"
+        method: PUT
+        url: "${upload_url}"
+        encoding: binary_file
+        use_auth: false
+        response_format: text
+
+      - name: precision_submit_url
+        type: http
+        condition: "api_mode == 'precision' && file_url != null && file_path == null && file_content_base64 == null"
+        method: POST
+        path: /api/v4/extract/task/batch
+        encoding: json
+        body:
+          files:
+            - url: "${file_url}"
+              data_id: "${document_id}"
+          model_version: "${model}"
+          language: "${options.language}"
+          is_ocr: "${options.is_ocr}"
+          enable_table: "${options.enable_table}"
+          enable_formula: "${options.enable_formula}"
+          extra_formats: "${options.extra_formats}"
+          no_cache: "${options.no_cache}"
+          cache_tolerance: "${options.cache_tolerance}"
+        exports:
+          batch_id: data.batch_id
+
+      - name: precision_poll
+        type: poll
+        condition: "api_mode == 'precision' && batch_id != null"
+        method: GET
+        path: "/api/v4/extract-results/batch/${batch_id}"
+        status_path: data.extract_result[0].state
+        success_values: [done, success]
+        failure_values: [failed, error]
+        poll_interval_seconds: 5
+        max_poll_seconds: 900
+        exports:
+          full_zip_url: data.extract_result[0].full_zip_url
+          extract_result: data.extract_result[0]
+
+      - name: agent_submit_url
+        type: http
+        condition: "api_mode == 'agent' && file_url != null && file_path == null && file_content_base64 == null"
+        method: POST
+        path: /api/v1/agent/parse/url
+        encoding: json
+        use_auth: false
+        body:
+          url: "${file_url}"
+          language: "${options.language}"
+          is_ocr: "${options.is_ocr}"
+          enable_table: "${options.enable_table}"
+          enable_formula: "${options.enable_formula}"
+        exports:
+          task_id: data.task_id
+
+      - name: agent_apply_upload
+        type: http
+        condition: "api_mode == 'agent' && (file_path != null || file_content_base64 != null)"
+        method: POST
+        path: /api/v1/agent/parse/file
+        encoding: json
+        use_auth: false
+        body:
+          file_name: "${filename}"
+          language: "${options.language}"
+          is_ocr: "${options.is_ocr}"
+          enable_table: "${options.enable_table}"
+          enable_formula: "${options.enable_formula}"
+        exports:
+          task_id: data.task_id
+          agent_upload_url: data.file_url
+
+      - name: agent_upload_file
+        type: http
+        condition: "api_mode == 'agent' && agent_upload_url != null"
+        method: PUT
+        url: "${agent_upload_url}"
+        encoding: binary_file
+        use_auth: false
+        response_format: text
+
+      - name: agent_poll
+        type: poll
+        condition: "api_mode == 'agent' && task_id != null"
+        method: GET
+        path: "/api/v1/agent/parse/${task_id}"
+        use_auth: false
+        status_path: data.state
+        success_values: [done]
+        failure_values: [failed]
+        poll_interval_seconds: 5
+        max_poll_seconds: 300
+        exports:
+          markdown_url: data.markdown_url
+
+      - name: agent_fetch_markdown
+        type: http
+        condition: "api_mode == 'agent' && markdown_url != null"
+        method: GET
+        url: "${markdown_url}"
+        use_auth: false
+        response_format: text
+        exports:
+          markdown: text
+
+    response:
+      markdown_path: "markdown || extract_result.markdown"
+      pages_path: "pages || extract_result.pages"
+      blocks_path: "extract_result.layout_blocks || extract_result.blocks"
+      figures_path: "figures || extract_result.figures"
+      tables_path: "tables || extract_result.tables"
+
+  paddleocr:
     driver: http
     location: remote
-    endpoint: https://aistudio.baidu.com/serving/api/v1
-    endpoint_env: PADDLEOCR_ENDPOINT
+    endpoint: https://paddleocr.aistudio-app.com
     enabled: true
     priority: 90
-    timeout: 120.0
-    capabilities:
-      - pdf
-      - image
-      - ocr
-      - layout
-      - figures
-      - tables
-      - formula
+    timeout_seconds: 900
+    model: PP-StructureV3
+    options:
+      useDocOrientationClassify: false
+      useDocUnwarping: false
+      useChartRecognition: false
+    capabilities: [pdf, image, ocr, layout, figures, tables, formula]
     auth:
-      type: header
-      header_name: Authorization
-      token_env: PADDLEOCR_API_KEY
-    request:
-      method: POST
-      path: /ocr/document
-      encoding: json
-      file:
-        mode: base64
-        field: file
-      fields:
-        use_layout: true
-        use_formula: true
-    async:
-      enabled: false
-    response:
-      markdown_path: result.markdown || result.text
-      blocks_path: result.layout_result || result.ocr_result
-      figures_path: result.figures
-      tables_path: result.tables
+      type: bearer
+      token: REPLACE_WITH_PADDLEOCR_TOKEN
 
-  mineru_local:
-    driver: http
-    location: local
-    endpoint: http://mineru-local:8000
-    endpoint_env: LOCAL_MINERU_ENDPOINT
-    enabled: true
-    priority: 50
-    timeout: 180.0
-    capabilities:
-      - pdf
-      - image
-      - ocr
-      - layout
-      - figures
-      - tables
-      - formula
-    lifecycle:
-      mode: on_demand
-      resource: mineru-local
-      startup_timeout_seconds: 60.0
-    auth:
-      type: none
-    request:
-      method: POST
-      path: /parse
-      encoding: multipart
-      file:
-        mode: multipart
-        field: file
-    async:
-      enabled: false
+    workflow:
+      - name: submit_local_file
+        type: http
+        condition: "file_path != null || file_content_base64 != null"
+        method: POST
+        path: /api/v2/ocr/jobs
+        encoding: multipart
+        file_field: file
+        body:
+          model: "${model}"
+          optionalPayload: "${options_json}"
+        exports:
+          job_id: data.jobId
+
+      - name: submit_url
+        type: http
+        condition: "file_url != null && file_path == null && file_content_base64 == null"
+        method: POST
+        path: /api/v2/ocr/jobs
+        encoding: json
+        body:
+          fileUrl: "${file_url}"
+          model: "${model}"
+          optionalPayload: "${options}"
+        exports:
+          job_id: data.jobId
+
+      - name: poll_job
+        type: poll
+        condition: "job_id != null"
+        method: GET
+        path: "/api/v2/ocr/jobs/${job_id}"
+        status_path: data.state
+        success_values: [done]
+        failure_values: [failed]
+        poll_interval_seconds: 5
+        max_poll_seconds: 900
+        exports:
+          markdown_url: data.resultUrl.markdownUrl
+          jsonl_url: data.resultUrl.jsonUrl
+
+      - name: fetch_markdown
+        type: http
+        condition: "markdown_url != null"
+        method: GET
+        url: "${markdown_url}"
+        use_auth: false
+        response_format: text
+        exports:
+          markdown: text
+
+      - name: fetch_jsonl
+        type: http
+        condition: "jsonl_url != null"
+        method: GET
+        url: "${jsonl_url}"
+        use_auth: false
+        response_format: jsonl
+
     response:
       markdown_path: markdown
-      blocks_path: blocks
-      figures_path: figures
-      tables_path: tables
+      blocks_path: "jsonl[].result.layoutParsingResults[]"
 
-  generic_local_ocr:
+  # Generic local HTTP OCR service. Point endpoint/path/model at any local
+  # service that accepts base64 input. Disabled until such a service exists.
+  local_ocr_http:
     driver: http
     location: local
-    endpoint: http://ai-gateway:8000
-    endpoint_env: LOCAL_OCR_ENDPOINT
-    enabled: true
-    priority: 30
-    timeout: 30.0
-    capabilities:
-      - image
-      - ocr
-    lifecycle:
-      mode: model_on_demand
-      resource: ocr_model
+    endpoint: http://127.0.0.1:8080
+    enabled: false
+    priority: 60
+    timeout_seconds: 120
+    model: PP-OCRv5
+    capabilities: [image, ocr]
     auth:
       type: none
     request:
@@ -154,8 +277,24 @@ providers:
       file:
         mode: base64
         field: image_base64
-    async:
-      enabled: false
+      fields:
+        model:
+          value_from: provider.model
+    response:
+      markdown_path: "text || result.text"
+      blocks_path: "lines || result.lines"
+
+  local_ocr_cli:
+    driver: command
+    location: local
+    enabled: false
+    priority: 50
+    timeout_seconds: 120
+    command: paddleocr
+    args:
+      - "--image_dir"
+      - "${file_path}"
+    output_format: text
+    capabilities: [image, ocr]
     response:
       markdown_path: text
-      blocks_path: lines || words

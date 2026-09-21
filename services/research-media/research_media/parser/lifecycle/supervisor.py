@@ -57,11 +57,19 @@ class LifecycleManager:
             if ok:
                 self.active_resources[lifecycle.resource] = time.time()
             return ok
-        return True
+        elif lifecycle.mode == "model_on_demand":
+            # model_on_demand requires an explicit gateway model backend
+            if not lifecycle.resource:
+                return False
+            # Return False to avoid routing to unsupported model_on_demand
+            return False
+        return False
 
     async def release_provider(self, lifecycle: LifecycleConfig) -> bool:
         if lifecycle.mode == "on_demand" and lifecycle.resource:
             self.active_resources[lifecycle.resource] = time.time()
+            if lifecycle.idle_timeout_seconds is not None and lifecycle.idle_timeout_seconds <= 0:
+                return await self.supervisor.stop_resource(lifecycle.resource)
         return True
 
 

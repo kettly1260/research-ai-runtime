@@ -19,5 +19,13 @@ known-good provider set when a hot edit is invalid. Inspect
 `GET /v1/providers` for the active config path, model/mode selection and any
 reload error.
 
+## Signed upload and result URLs
+
+Provider workflows can select `transport: requests` for pre-signed object
+storage URLs. This is used for MinerU file upload URLs and PaddleOCR result
+resource URLs, while normal API submit/poll calls continue to use the default
+async HTTP transport. The split keeps authentication on provider API calls and
+avoids attaching provider credentials to object-storage/CDN requests.
+
 See the root `README.md` for MinerU/PaddleOCR examples, local OCR templates,
 privacy routing, and Unraid paths.

@@ -131,12 +131,13 @@ Recommended persistent paths:
 ```text
 /mnt/user/appdata/ovms/runtime/providers.yaml
 /mnt/user/appdata/ovms/media/
-/mnt/user/appdata/ovms/research-media-src/
 ```
 
 On the production Unraid host, `research-media` is part of the existing
 Compose Manager project at
 `/boot/config/plugins/compose.manager/projects/OVMS/docker-compose.yml`.
+Production should use the GitHub Actions-built GHCR image pinned by immutable
+digest; it does not require a local research-media source/build directory.
 Mount the existing OVMS runtime directory read-only as the parser config:
 
 ```yaml

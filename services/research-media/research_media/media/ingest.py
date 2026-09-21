@@ -22,7 +22,7 @@ class MediaIngestor:
         doc: ParsedDocument,
         source_uri: str = "",
         embedding_model: str = "jina-clip-v2",
-        dino_model: str = "dinov3",
+        dino_model: str = "dinov2-small",
     ) -> Dict[str, Any]:
         ingested = []
         skipped = 0
@@ -38,7 +38,7 @@ class MediaIngestor:
                 skipped += 1
                 continue
 
-            # Compute multimodal vector (jina-clip-v2) and DINO vector (dinov3)
+            # Compute multimodal vector (jina-clip-v2) and DINO vector (dinov2-small)
             multimodal_vec = None
             dino_vec = None
 

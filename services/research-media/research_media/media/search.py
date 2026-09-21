@@ -34,7 +34,7 @@ class MediaSearchService:
         image_input: Any,
         top_k: int = 10,
         filter_expr: Optional[str] = None,
-        model: str = "dinov3",
+        model: str = "dinov2-small",
     ) -> List[Dict[str, Any]]:
         """Image to Image search using DINO visual representations."""
         vecs = await self.gateway.get_dino_embedding([image_input], model=model)

@@ -31,8 +31,8 @@ def get_configured_dimensions() -> tuple[int, int]:
                 if multimodal_dim == 0 and "jina-clip-v2" in models:
                     j_cfg = models["jina-clip-v2"]
                     multimodal_dim = int(j_cfg.get("truncate_dimension") or j_cfg.get("output_dimension") or 512)
-                if dino_dim == 0 and "dinov3" in models:
-                    d_cfg = models["dinov3"]
+                if dino_dim == 0 and "dinov2-small" in models:
+                    d_cfg = models["dinov2-small"]
                     dino_dim = int(d_cfg.get("output_dimension") or 384)
                 if multimodal_dim > 0 and dino_dim > 0:
                     break

@@ -793,6 +793,8 @@ def test_media_ingest_and_search(tmp_path, client):
             ingest_res = res.json()
             assert ingest_res["ingested_count"] == 1
             assert ingest_res["skipped_duplicates"] == 0
+            assert mock_img_emb.call_args.kwargs["model"] == "jina-clip-v2"
+            assert mock_dino_emb.call_args.kwargs["model"] == "dinov2-small"
 
             # Ingest same again -> deduplication test
             res2 = client.post("/v1/media/ingest", json=ingest_payload)
@@ -827,6 +829,7 @@ def test_media_ingest_and_search(tmp_path, client):
             d_data = res_dino.json()
             assert d_data["mode"] == "image_to_image"
             assert d_data["count"] == 1
+            assert mock_dino_search.call_args.kwargs["model"] == "dinov2-small"
 
 
 def test_disabled_provider_never_available():

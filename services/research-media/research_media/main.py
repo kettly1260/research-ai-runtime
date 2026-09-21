@@ -26,7 +26,7 @@ class IngestRequest(BaseModel):
     document: ParsedDocument
     source_uri: Optional[str] = None
     embedding_model: str = "jina-clip-v2"
-    dino_model: str = "dinov3"
+    dino_model: str = "dinov2-small"
 
 
 @app.post("/v1/media/ingest")
@@ -67,7 +67,7 @@ async def search_media(req: MediaSearchRequest):
     elif req.mode == "image_to_image":
         if not req.query_image:
             raise HTTPException(status_code=400, detail="query_image is required for image_to_image search")
-        model = req.model or "dinov3"
+        model = req.model or "dinov2-small"
         results = await MEDIA_SEARCH.search_by_image(
             image_input=req.query_image,
             top_k=req.top_k,

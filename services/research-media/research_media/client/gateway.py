@@ -44,7 +44,7 @@ class GatewayClient:
             data = resp.json()
             return [item["embedding"] for item in data.get("data", [])]
 
-    async def get_dino_embedding(self, images: List[Any], model: str = "dinov3") -> List[List[float]]:
+    async def get_dino_embedding(self, images: List[Any], model: str = "dinov2-small") -> List[List[float]]:
         url = f"{self.endpoint}/v1/embeddings"
         payload = {
             "model": model,

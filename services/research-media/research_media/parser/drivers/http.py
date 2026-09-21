@@ -10,6 +10,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import jmespath
+import requests
 
 from contracts import ParseRequest, ParsedDocument
 from ..base import BaseParserDriver
@@ -176,7 +177,7 @@ class GenericHttpDriver(BaseParserDriver):
         return field_def
 
     @staticmethod
-    def _decode_workflow_response(resp: httpx.Response, response_format: str) -> Dict[str, Any]:
+    def _decode_workflow_response(resp: Any, response_format: str) -> Dict[str, Any]:
         if response_format == "json":
             try:
                 payload = resp.json()
@@ -403,7 +404,46 @@ class GenericHttpDriver(BaseParserDriver):
 
                 for attempt in range(retry_attempts):
                     try:
-                        if encoding in ("binary_file", "raw_file"):
+                        if step.transport == "requests":
+                            sync_kwargs: Dict[str, Any] = {
+                                "headers": step_headers,
+                                "params": step_params,
+                                "timeout": min(
+                                    self.definition.timeout_seconds
+                                    if self.definition.timeout_seconds is not None
+                                    else self.definition.timeout,
+                                    600.0,
+                                ),
+                            }
+                            if encoding in ("binary_file", "raw_file"):
+                                sync_kwargs["data"] = file_bytes
+                            elif encoding == "multipart":
+                                file_field = step.file_field or "file"
+                                sync_kwargs["files"] = {
+                                    file_field: (filename, file_bytes, mime_type)
+                                }
+                                sync_kwargs["data"] = (
+                                    _interpolate_value(step.body, context)
+                                    if step.body
+                                    else None
+                                )
+                            elif encoding == "urlencoded":
+                                sync_kwargs["data"] = _interpolate_value(
+                                    step.body, context
+                                )
+                            else:
+                                sync_kwargs["json"] = (
+                                    _interpolate_value(step.body, context)
+                                    if step.body is not None
+                                    else None
+                                )
+                            resp = await asyncio.to_thread(
+                                requests.request,
+                                step.method,
+                                step_url,
+                                **sync_kwargs,
+                            )
+                        elif encoding in ("binary_file", "raw_file"):
                             resp = await client.request(
                                 step.method, step_url, headers=step_headers, params=step_params, content=file_bytes
                             )
@@ -424,7 +464,7 @@ class GenericHttpDriver(BaseParserDriver):
                             resp = await client.request(
                                 step.method, step_url, headers=step_headers, params=step_params, json=json_data
                             )
-                    except httpx.RequestError:
+                    except (httpx.RequestError, requests.RequestException):
                         if attempt + 1 < retry_attempts:
                             await asyncio.sleep(max(0.0, float(step.retry_delay_seconds)))
                             continue

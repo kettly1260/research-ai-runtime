@@ -102,6 +102,7 @@ class WorkflowStep(BaseModel):
     type: Literal["http", "request", "poll", "extract"] = "http"
     condition: Optional[str] = None
     method: Literal["GET", "POST", "PUT", "DELETE"] = "POST"
+    transport: Literal["httpx", "requests"] = "httpx"
     url: Optional[str] = None
     path: Optional[str] = None
     encoding: Literal["json", "multipart", "binary_file", "raw_file", "urlencoded"] = "json"

@@ -1071,6 +1071,7 @@ def test_workflow_model_options_and_presigned_auth_boundary(tmp_path):
                 "name": "upload",
                 "type": "http",
                 "method": "PUT",
+                "transport": "requests",
                 "url": "${upload_url}",
                 "encoding": "binary_file",
                 "use_auth": False,
@@ -1085,15 +1086,16 @@ def test_workflow_model_options_and_presigned_auth_boundary(tmp_path):
         json={"data": {"url": "https://storage.example/presigned"}},
         request=httpx.Request("POST", "https://parser.example/apply"),
     )
-    upload_resp = httpx.Response(
-        200,
-        text="uploaded",
-        request=httpx.Request("PUT", "https://storage.example/presigned"),
-    )
+    upload_resp = MagicMock()
+    upload_resp.status_code = 200
+    upload_resp.text = "uploaded"
+    upload_resp.content = b"uploaded"
 
     async def _run():
-        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
-            mock_req.side_effect = [apply_resp, upload_resp]
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req, \
+             patch("research_media.parser.drivers.http.requests.request") as mock_sync:
+            mock_req.side_effect = [apply_resp]
+            mock_sync.return_value = upload_resp
             doc = await driver.parse(ParseRequest(file_path=str(dummy_file)))
             assert doc.markdown == "uploaded"
             submit_call = mock_req.call_args_list[0]
@@ -1103,9 +1105,13 @@ def test_workflow_model_options_and_presigned_auth_boundary(tmp_path):
                 "enable_table": True,
             }
             assert submit_call.kwargs["headers"]["Authorization"] == "Bearer top-secret"
-            upload_call = mock_req.call_args_list[1]
+            upload_call = mock_sync.call_args
+            assert upload_call.args[:2] == (
+                "PUT",
+                "https://storage.example/presigned",
+            )
             assert "Authorization" not in upload_call.kwargs["headers"]
-            assert upload_call.kwargs["content"] == b"%PDF test"
+            assert upload_call.kwargs["data"] == b"%PDF test"
             assert "top-secret" not in str(doc.raw_provider_result)
             assert "api_key" not in doc.raw_provider_result
             assert "token" not in doc.raw_provider_result
@@ -1152,6 +1158,7 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
                 "name": "jsonl",
                 "type": "http",
                 "method": "GET",
+                "transport": "requests",
                 "url": "${jsonl_url}",
                 "use_auth": False,
                 "response_format": "jsonl",
@@ -1185,24 +1192,24 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
             },
             request=httpx.Request("GET", "https://paddle.example/jobs/job-1"),
         ),
-        httpx.Response(
-            403,
-            text='{"code":"AccessDenied","message":"Access Denied."}',
-            request=httpx.Request("GET", "https://bos.example/result.jsonl"),
-        ),
-        httpx.Response(
-            200,
-            text=(
-                '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 1"}}]}}\n'
-                '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 2"}}]}}\n'
-            ),
-            request=httpx.Request("GET", "https://bos.example/result.jsonl"),
-        ),
     ]
+    denied_resp = MagicMock()
+    denied_resp.status_code = 403
+    denied_resp.text = '{"code":"AccessDenied","message":"Access Denied."}'
+    denied_resp.content = denied_resp.text.encode()
+    success_resp = MagicMock()
+    success_resp.status_code = 200
+    success_resp.text = (
+        '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 1"}}]}}\n'
+        '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 2"}}]}}\n'
+    )
+    success_resp.content = success_resp.text.encode()
 
     async def _run():
-        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
+        with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req, \
+             patch("research_media.parser.drivers.http.requests.request") as mock_sync:
             mock_req.side_effect = responses
+            mock_sync.side_effect = [denied_resp, success_resp]
             doc = await driver.parse(ParseRequest(file_url="https://example.org/paper.pdf"))
             assert doc.markdown == "# Page 1\n\n# Page 2"
             assert len(doc.raw_provider_result["jsonl"]) == 2
@@ -1211,8 +1218,9 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
             assert mock_req.call_args_list[0].kwargs["json"]["optionalPayload"] == {
                 "useDocUnwarping": False
             }
-            assert "Authorization" not in mock_req.call_args_list[2].kwargs["headers"]
-            assert "Authorization" not in mock_req.call_args_list[3].kwargs["headers"]
+            assert mock_sync.call_count == 2
+            assert "Authorization" not in mock_sync.call_args_list[0].kwargs["headers"]
+            assert "Authorization" not in mock_sync.call_args_list[1].kwargs["headers"]
             assert "paddle-secret" not in str(doc.raw_provider_result)
             assert "jsonl_url" not in doc.raw_provider_result
 

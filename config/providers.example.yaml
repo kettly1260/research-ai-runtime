@@ -64,6 +64,7 @@ providers:
         type: http
         condition: "api_mode == 'precision' && upload_url != null"
         method: PUT
+        transport: requests
         url: "${upload_url}"
         encoding: binary_file
         use_auth: false
@@ -141,6 +142,7 @@ providers:
         type: http
         condition: "api_mode == 'agent' && agent_upload_url != null"
         method: PUT
+        transport: requests
         url: "${agent_upload_url}"
         encoding: binary_file
         use_auth: false
@@ -239,6 +241,7 @@ providers:
         type: http
         condition: "markdown_url != null"
         method: GET
+        transport: requests
         url: "${markdown_url}"
         use_auth: false
         response_format: text
@@ -249,6 +252,7 @@ providers:
         type: http
         condition: "jsonl_url != null"
         method: GET
+        transport: requests
         url: "${jsonl_url}"
         use_auth: false
         response_format: jsonl

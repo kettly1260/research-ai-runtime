@@ -402,27 +402,33 @@ class GenericHttpDriver(BaseParserDriver):
                 resp = None
 
                 for attempt in range(retry_attempts):
-                    if encoding in ("binary_file", "raw_file"):
-                        resp = await client.request(
-                            step.method, step_url, headers=step_headers, params=step_params, content=file_bytes
-                        )
-                    elif encoding == "multipart":
-                        file_field = step.file_field or "file"
-                        files = {file_field: (filename, file_bytes, mime_type)}
-                        data = _interpolate_value(step.body, context) if step.body else None
-                        resp = await client.request(
-                            step.method, step_url, headers=step_headers, params=step_params, data=data, files=files
-                        )
-                    elif encoding == "urlencoded":
-                        data = _interpolate_value(step.body, context)
-                        resp = await client.request(
-                            step.method, step_url, headers=step_headers, params=step_params, data=data
-                        )
-                    else:  # json
-                        json_data = _interpolate_value(step.body, context) if step.body is not None else None
-                        resp = await client.request(
-                            step.method, step_url, headers=step_headers, params=step_params, json=json_data
-                        )
+                    try:
+                        if encoding in ("binary_file", "raw_file"):
+                            resp = await client.request(
+                                step.method, step_url, headers=step_headers, params=step_params, content=file_bytes
+                            )
+                        elif encoding == "multipart":
+                            file_field = step.file_field or "file"
+                            files = {file_field: (filename, file_bytes, mime_type)}
+                            data = _interpolate_value(step.body, context) if step.body else None
+                            resp = await client.request(
+                                step.method, step_url, headers=step_headers, params=step_params, data=data, files=files
+                            )
+                        elif encoding == "urlencoded":
+                            data = _interpolate_value(step.body, context)
+                            resp = await client.request(
+                                step.method, step_url, headers=step_headers, params=step_params, data=data
+                            )
+                        else:  # json
+                            json_data = _interpolate_value(step.body, context) if step.body is not None else None
+                            resp = await client.request(
+                                step.method, step_url, headers=step_headers, params=step_params, json=json_data
+                            )
+                    except httpx.RequestError:
+                        if attempt + 1 < retry_attempts:
+                            await asyncio.sleep(max(0.0, float(step.retry_delay_seconds)))
+                            continue
+                        raise
 
                     if (
                         resp.status_code in retry_statuses
@@ -500,14 +506,40 @@ class GenericHttpDriver(BaseParserDriver):
                 return " ".join(str(c).strip() for c in val if c is not None and str(c).strip()).strip()
             return str(val).strip()
 
-        # Streaming download into memory buffer
-        bio = io.BytesIO()
-        async with client.stream("GET", zip_url, timeout=120.0) as resp:
-            if resp.status_code != 200:
-                raise RuntimeError(f"Failed to download parser ZIP from {zip_url}: HTTP {resp.status_code}")
-            async for chunk in resp.aiter_bytes(chunk_size=65536):
-                bio.write(chunk)
-        zip_bytes = bio.getvalue()
+        # Result-object/CDN availability can lag the provider job state, and
+        # transient network failures should not invalidate an already-finished
+        # parse. Use fresh connections for a small bounded retry window.
+        async def _download(download_client: Any) -> bytes:
+            bio = io.BytesIO()
+            async with download_client.stream("GET", zip_url, timeout=120.0) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Result ZIP HTTP {resp.status_code}")
+                async for chunk in resp.aiter_bytes(chunk_size=65536):
+                    bio.write(chunk)
+            return bio.getvalue()
+
+        last_error: Optional[Exception] = None
+        zip_bytes = b""
+        for attempt in range(3):
+            try:
+                if attempt == 0:
+                    zip_bytes = await _download(client)
+                else:
+                    async with httpx.AsyncClient(
+                        timeout=120.0,
+                        follow_redirects=True,
+                    ) as fresh_client:
+                        zip_bytes = await _download(fresh_client)
+                if zip_bytes:
+                    break
+                raise RuntimeError("Result ZIP download returned an empty body")
+            except (httpx.RequestError, RuntimeError) as exc:
+                last_error = exc
+                if attempt == 2:
+                    raise RuntimeError(f"Result ZIP download failed after 3 attempts: {exc}") from exc
+                await asyncio.sleep(1.0 + attempt * 2.0)
+        if not zip_bytes:
+            raise RuntimeError(f"Result ZIP download failed after 3 attempts: {last_error}")
 
         extracted: Dict[str, Any] = {
             "markdown": "",

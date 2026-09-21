@@ -34,11 +34,11 @@ for k in list(sys.modules.keys()):
         del sys.modules[k]
 sys.path.insert(0, os.path.abspath("services/research-media"))
 
-from app.main import app as media_app
-from app.parser.manager import PARSER_MANAGER
-from app.media.store import LanceMediaStore, MEDIA_STORE
-from app.media.ingest import MEDIA_INGESTOR
-from app.media.search import MEDIA_SEARCH
+from research_media.main import app as media_app
+from research_media.parser.manager import PARSER_MANAGER
+from research_media.media.store import LanceMediaStore, MEDIA_STORE
+from research_media.media.ingest import MEDIA_INGESTOR
+from research_media.media.search import MEDIA_SEARCH
 from contracts import ParseRequest, ParsedDocument, DocumentFigure
 
 
@@ -83,9 +83,11 @@ def test_parser_privacy_hard_boundary():
     req = ParseRequest(privacy="private", needs=["pdf", "layout", "figures"])
     candidates = PARSER_MANAGER.select_candidates(req)
 
-    assert len(candidates) > 0
+    # Local parsers are disabled by default in the checked-in provider
+    # template, so an empty candidate set is a valid fail-closed outcome.
     for cand in candidates:
         assert cand.definition.location == "local", f"Security violation: Private document exposed to {cand.name} ({cand.definition.location})"
+    assert all(c.definition.location != "remote" for c in candidates)
 
 
 def test_parser_quota_exhaustion_backoff():
@@ -111,9 +113,9 @@ def test_full_pipeline_parse_ingest_search(tmp_path, media_client):
     with patch.object(MEDIA_INGESTOR, "store", temp_store), \
          patch.object(MEDIA_SEARCH, "store", temp_store):
 
-        with patch("app.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
-             patch("app.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
-             patch("app.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
+        with patch("research_media.media.ingest.GatewayClient.get_image_embedding", new_callable=AsyncMock) as mock_img_emb, \
+             patch("research_media.media.ingest.GatewayClient.get_dino_embedding", new_callable=AsyncMock) as mock_dino_emb, \
+             patch("research_media.media.search.GatewayClient.get_text_embedding", new_callable=AsyncMock) as mock_txt_emb:
 
             mock_img_emb.return_value = [[0.05] * 512]
             mock_dino_emb.return_value = [[0.08] * 384]

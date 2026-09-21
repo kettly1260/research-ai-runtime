@@ -27,5 +27,10 @@ resource URLs, while normal API submit/poll calls continue to use the default
 async HTTP transport. The split keeps authentication on provider API calls and
 avoids attaching provider credentials to object-storage/CDN requests.
 
+The integration test suite imports the installed `research_media` package
+namespace. Private-document routing is intentionally fail-closed: when all
+local providers are disabled, a private parse may have zero eligible
+candidates rather than falling back to a remote provider.
+
 See the root `README.md` for MinerU/PaddleOCR examples, local OCR templates,
 privacy routing, and Unraid paths.

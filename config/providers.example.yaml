@@ -252,10 +252,17 @@ providers:
         url: "${jsonl_url}"
         use_auth: false
         response_format: jsonl
+        # Paddle's BOS result object can lag the job's done state briefly.
+        # Retry transient object-visibility failures instead of failing the
+        # already-completed OCR job immediately.
+        retry_statuses: [403, 404, 429, 500, 502, 503, 504]
+        retry_attempts: 15
+        retry_delay_seconds: 1
 
     response:
-      markdown_path: markdown
+      markdown_path: "markdown || jsonl[].result.layoutParsingResults[].markdown.text"
       blocks_path: "jsonl[].result.layoutParsingResults[]"
+      block_content_path: "markdown.text || content || text || res"
 
   # Generic local HTTP OCR service. Point endpoint/path/model at any local
   # service that accepts base64 input. Disabled until such a service exists.

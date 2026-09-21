@@ -33,7 +33,13 @@ def normalize_response(
     markdown_text = _eval_jmespath(mapping.markdown_path, raw_result, "")
     if not markdown_text and mapping.text_path:
         markdown_text = _eval_jmespath(mapping.text_path, raw_result, "")
-    if not isinstance(markdown_text, str):
+    if isinstance(markdown_text, list):
+        markdown_text = "\n\n".join(
+            str(part).strip()
+            for part in markdown_text
+            if part is not None and str(part).strip()
+        )
+    elif not isinstance(markdown_text, str):
         markdown_text = str(markdown_text or "")
 
     # 2. Extract pages

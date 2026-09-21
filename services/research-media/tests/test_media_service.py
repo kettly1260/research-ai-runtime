@@ -1106,6 +1106,9 @@ def test_workflow_model_options_and_presigned_auth_boundary(tmp_path):
             upload_call = mock_req.call_args_list[1]
             assert "Authorization" not in upload_call.kwargs["headers"]
             assert upload_call.kwargs["content"] == b"%PDF test"
+            assert "top-secret" not in str(doc.raw_provider_result)
+            assert "api_key" not in doc.raw_provider_result
+            assert "token" not in doc.raw_provider_result
 
     asyncio.run(_run())
 
@@ -1141,19 +1144,9 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
                 "status_path": "data.state",
                 "success_values": ["done"],
                 "exports": {
-                    "markdown_url": "data.resultUrl.markdownUrl",
                     "jsonl_url": "data.resultUrl.jsonUrl",
                 },
                 "poll_interval_seconds": 0.01,
-            },
-            {
-                "name": "markdown",
-                "type": "http",
-                "method": "GET",
-                "url": "${markdown_url}",
-                "use_auth": False,
-                "response_format": "text",
-                "exports": {"markdown": "text"},
             },
             {
                 "name": "jsonl",
@@ -1162,9 +1155,16 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
                 "url": "${jsonl_url}",
                 "use_auth": False,
                 "response_format": "jsonl",
+                "retry_statuses": [403, 404],
+                "retry_attempts": 3,
+                "retry_delay_seconds": 0,
             },
         ],
-        response=ResponseMappingConfig(markdown_path="markdown"),
+        response=ResponseMappingConfig(
+            markdown_path="jsonl[].result.layoutParsingResults[].markdown.text",
+            blocks_path="jsonl[].result.layoutParsingResults[]",
+            block_content_path="markdown.text || content || text || res",
+        ),
     )
     driver = GenericHttpDriver(definition)
     responses = [
@@ -1179,7 +1179,6 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
                 "data": {
                     "state": "done",
                     "resultUrl": {
-                        "markdownUrl": "https://bos.example/result.md",
                         "jsonUrl": "https://bos.example/result.jsonl",
                     },
                 }
@@ -1187,13 +1186,16 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
             request=httpx.Request("GET", "https://paddle.example/jobs/job-1"),
         ),
         httpx.Response(
-            200,
-            text="# Parsed by Paddle",
-            request=httpx.Request("GET", "https://bos.example/result.md"),
+            403,
+            text='{"code":"AccessDenied","message":"Access Denied."}',
+            request=httpx.Request("GET", "https://bos.example/result.jsonl"),
         ),
         httpx.Response(
             200,
-            text='{"result":{"page":1}}\n{"result":{"page":2}}\n',
+            text=(
+                '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 1"}}]}}\n'
+                '{"result":{"layoutParsingResults":[{"markdown":{"text":"# Page 2"}}]}}\n'
+            ),
             request=httpx.Request("GET", "https://bos.example/result.jsonl"),
         ),
     ]
@@ -1202,13 +1204,16 @@ def test_paddle_style_workflow_markdown_jsonl_and_no_auth_fetch():
         with patch.object(httpx.AsyncClient, "request", new_callable=AsyncMock) as mock_req:
             mock_req.side_effect = responses
             doc = await driver.parse(ParseRequest(file_url="https://example.org/paper.pdf"))
-            assert doc.markdown == "# Parsed by Paddle"
+            assert doc.markdown == "# Page 1\n\n# Page 2"
             assert len(doc.raw_provider_result["jsonl"]) == 2
+            assert len(doc.blocks) == 2
             assert mock_req.call_args_list[0].kwargs["json"]["model"] == "PP-StructureV3"
             assert mock_req.call_args_list[0].kwargs["json"]["optionalPayload"] == {
                 "useDocUnwarping": False
             }
             assert "Authorization" not in mock_req.call_args_list[2].kwargs["headers"]
             assert "Authorization" not in mock_req.call_args_list[3].kwargs["headers"]
+            assert "paddle-secret" not in str(doc.raw_provider_result)
+            assert "jsonl_url" not in doc.raw_provider_result
 
     asyncio.run(_run())

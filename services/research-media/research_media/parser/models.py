@@ -113,6 +113,9 @@ class WorkflowStep(BaseModel):
     use_auth: bool = True
     response_format: Literal["json", "jsonl", "text", "binary"] = "json"
     action: Optional[Literal["download_zip", "download_and_extract_zip"]] = None
+    retry_statuses: List[int] = Field(default_factory=list)
+    retry_attempts: int = 1
+    retry_delay_seconds: float = 1.0
 
     # Polling parameters (used when type == "poll")
     status_path: Optional[str] = None

@@ -17,6 +17,38 @@ from ..models import ProviderDefinition, RequestField, WorkflowStep
 from ..normalization import normalize_response
 
 
+_OUTPUT_PRIVATE_KEYS = {
+    "token",
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "authorization",
+    "password",
+    "secret",
+    "file_content_base64",
+    "upload_url",
+    "agent_upload_url",
+    "full_zip_url",
+    "markdown_url",
+    "jsonl_url",
+    "resulturl",
+}
+
+
+def _sanitize_output_payload(value: Any) -> Any:
+    """Remove credentials and temporary signed-resource URLs from API output."""
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).lower() in _OUTPUT_PRIVATE_KEYS:
+                continue
+            cleaned[key] = _sanitize_output_payload(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_output_payload(item) for item in value]
+    return value
+
+
 def _interpolate_value(val: Any, context: Dict[str, Any]) -> Any:
     """Recursively interpolates ${var} placeholders from context into values."""
     if isinstance(val, str):
@@ -365,27 +397,43 @@ class GenericHttpDriver(BaseParserDriver):
 
             else:
                 encoding = step.encoding
-                if encoding in ("binary_file", "raw_file"):
-                    resp = await client.request(
-                        step.method, step_url, headers=step_headers, params=step_params, content=file_bytes
-                    )
-                elif encoding == "multipart":
-                    file_field = step.file_field or "file"
-                    files = {file_field: (filename, file_bytes, mime_type)}
-                    data = _interpolate_value(step.body, context) if step.body else None
-                    resp = await client.request(
-                        step.method, step_url, headers=step_headers, params=step_params, data=data, files=files
-                    )
-                elif encoding == "urlencoded":
-                    data = _interpolate_value(step.body, context)
-                    resp = await client.request(
-                        step.method, step_url, headers=step_headers, params=step_params, data=data
-                    )
-                else:  # json
-                    json_data = _interpolate_value(step.body, context) if step.body is not None else None
-                    resp = await client.request(
-                        step.method, step_url, headers=step_headers, params=step_params, json=json_data
-                    )
+                retry_attempts = max(1, int(step.retry_attempts))
+                retry_statuses = set(step.retry_statuses)
+                resp = None
+
+                for attempt in range(retry_attempts):
+                    if encoding in ("binary_file", "raw_file"):
+                        resp = await client.request(
+                            step.method, step_url, headers=step_headers, params=step_params, content=file_bytes
+                        )
+                    elif encoding == "multipart":
+                        file_field = step.file_field or "file"
+                        files = {file_field: (filename, file_bytes, mime_type)}
+                        data = _interpolate_value(step.body, context) if step.body else None
+                        resp = await client.request(
+                            step.method, step_url, headers=step_headers, params=step_params, data=data, files=files
+                        )
+                    elif encoding == "urlencoded":
+                        data = _interpolate_value(step.body, context)
+                        resp = await client.request(
+                            step.method, step_url, headers=step_headers, params=step_params, data=data
+                        )
+                    else:  # json
+                        json_data = _interpolate_value(step.body, context) if step.body is not None else None
+                        resp = await client.request(
+                            step.method, step_url, headers=step_headers, params=step_params, json=json_data
+                        )
+
+                    if (
+                        resp.status_code in retry_statuses
+                        and attempt + 1 < retry_attempts
+                    ):
+                        await asyncio.sleep(max(0.0, float(step.retry_delay_seconds)))
+                        continue
+                    break
+
+                if resp is None:
+                    raise RuntimeError(f"Workflow step '{step.name}' produced no HTTP response")
 
                 if resp.status_code == 429:
                     self.record_failure(Exception("HTTP 429 Quota Exceeded"), quota_exhausted=True)
@@ -437,7 +485,7 @@ class GenericHttpDriver(BaseParserDriver):
                 self.record_failure(exc)
                 raise RuntimeError(f"Failed to unpack MinerU ZIP from {zip_url}: {exc}") from exc
 
-        return final_payload
+        return _sanitize_output_payload(final_payload)
 
     async def _unpack_zip_archive(self, client: httpx.AsyncClient, zip_url: str) -> Dict[str, Any]:
         """Downloads a MinerU/standard parser result ZIP and extracts markdown, content list, figures, and tables."""
